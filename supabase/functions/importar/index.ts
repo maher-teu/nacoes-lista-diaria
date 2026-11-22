@@ -12,6 +12,8 @@ const TABLES: Record<string, { onConflict?: string }> = {
   customers: { onConflict: "code" },
   purchases: {},
   cycles: { onConflict: "customer_code,list_date" },
+  import_gender: { onConflict: "code" },
+  import_recent: { onConflict: "name_norm" },
 };
 
 function json(body: unknown, status = 200) {
