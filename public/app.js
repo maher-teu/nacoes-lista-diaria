@@ -423,6 +423,7 @@
   }
 
   function shareCatalog(name) {
+    if (DEMO) { toast('Modo demonstração: aqui a foto da peça abriria para enviar no WhatsApp.'); return; }
     const file = S.catalogBlobs[name];
     const item = S.catalog.find((x) => x.name === name) || { url: pubUrl(name) };
     if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -534,7 +535,7 @@
   function itemBlock(c) {
     const it = c.item;
     if (!it || !it.image_path) return '';
-    const url = pubUrl(it.image_path);
+    const url = it.url || pubUrl(it.image_path);
     prefetchBlob(it.image_path, url);
     return `<div class="msg-box" style="flex-direction:row;align-items:center;gap:12px">
       <img src="${esc(url)}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:8px;flex-shrink:0">
@@ -579,6 +580,7 @@
     }
     return `<article class="card">${head}
       <p class="small muted">Primeira mensagem às ${esc(time(c.sent_at))}</p>
+      ${itemBlock(c)}
       <p class="ask">${esc(fname(cu))} respondeu no WhatsApp?</p>
       <div class="btns">
         <button class="btn primary" data-act="bump-no" data-id="${c.id}">Não, mandar lembrete</button>
@@ -595,7 +597,7 @@
     if (u.step === 'sold') return `<article class="card">${head}${soldBlock(c)}</article>`;
     return `<article class="card">${head}
       <div class="chips"><span class="chip green"><i></i>Respondeu: ${esc(REPLY_LABEL[c.reply_reason] || 'sim')}</span><span class="chip gray"><i></i>Follow-up ${(c.followups_done || 0) + 1} de ${max}</span></div>
-      ${lastBuy(cu)}${msgBox(c, 'follow', 'Mensagem sugerida (pode mudar)')}${waButtons(c, 'follow')}
+      ${lastBuy(cu)}${itemBlock(c)}${msgBox(c, 'follow', 'Mensagem sugerida (pode mudar)')}${waButtons(c, 'follow')}
       <div class="pills">
         <button class="pill good" data-act="sold-ask" data-id="${c.id}">Comprou</button>
         <button class="pill" data-act="close" data-id="${c.id}">Encerrar conversa</button>
@@ -1147,7 +1149,7 @@
     const today = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
     const ago = (h) => new Date(Date.now() - h * 3600e3).toISOString();
     const people = [
-      ['Ana Souza', 'Ana', ['aniversario:2:quarta', 'natal', 'conjunto', 'vip', 'frequente:9'], 'Oi Ana, tudo bem? Aqui é da Baummer Nações. Seu aniversário é nesta quarta, então já deixamos nosso feliz aniversário adiantado! E como está o brinco que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
+      ['Ana Souza', 'Ana', ['aniversario:2:quarta', 'natal', 'conjunto', 'vip', 'frequente:9'], 'Oi, Ana! Aqui é da Baummer Nações 🎂\n\nParabéns adiantado pelo seu aniversário de quarta!\n\nSeparei o colar de pérola dourado, porque ele faz conjunto com o brinco de pérola que você levou ✨\n\nPosso te mandar a foto da peça? 💛'],
       ['Beatriz Lima', 'Beatriz', ['aniversario:1:terça', 'natal', 'sumida', 'vip'], 'Oi Beatriz, tudo bem? Aqui é da Baummer Nações. Amanhã é seu aniversário, né? Feliz aniversário adiantado! Faz um tempinho que você não passa aqui, e chegaram pulseiras novas folheadas a ouro que são a sua cara. Quer que a gente separe algumas pra você ver?'],
       ['Carla Mendes', 'Carla', ['natal', 'vip', 'frequente:7'], 'Oi Carla, tudo bem? Aqui é da Baummer Nações. No Natal passado você levou corrente e pingente com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
       ['Daniela Rocha', 'Daniela', ['conjunto', 'boa_cliente'], 'Oi Daniela, tudo bem? Aqui é da Baummer Nações. Como está o colar de zircônia que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
@@ -1166,6 +1168,7 @@
       last_items: ['BRINCO ZIRCÔNIA PEQUENO OURO FOLHEADO (R$79,90)', 'PULSEIRA RIVIERA PEQUENO OURO FOLHEADO (R$99,90)'],
       birth_date: '1990-11-25', customer_since: '2019-03-10', seller: 'Vendedora 1', do_not_contact: false,
     }));
+    customers[0].last_items = ['BRINCO PÉROLA PEQUENO OURO BANHADO (R$69,90)'];
     const cycles = customers.map((cu, i) => ({
       id: seq++, customer_code: cu.code, list_date: today, origin: 'lista', position: i + 1, score: 100 - i * 5,
       reasons: people[i][2], message: people[i][3],
@@ -1173,6 +1176,8 @@
       status: 'pendente', sent_at: null, bump_due_at: null, bump_sent_at: null, replied_at: null, reply_reason: null,
       followups_done: 0, next_followup_on: null, last_followup_at: null, sold_at: null, sale_value: null, closed_at: null, close_reason: null, updated_at: ago(1),
     }));
+    cycles[8].item = { ref: 'DEMO', image_path: 'demo/peca.jpg', url: 'demo/peca.jpg', description: 'COLAR PÉROLA MÉDIO OURO BANHADO' };
+    cycles[0].item = { ref: 'DEMO', image_path: 'demo/peca.jpg', url: 'demo/peca.jpg', description: 'COLAR PÉROLA MÉDIO OURO BANHADO' };
     // Duas enviadas mais cedo hoje (um lembrete já na hora, outro mais tarde) e uma conversa em andamento.
     const startOfDay = Date.now() - ((local.getHours() * 60 + local.getMinutes()) * 60 + local.getSeconds()) * 1000;
     const earlier = (h) => new Date(Math.max(Date.now() - h * 3600e3, startOfDay + 60e3)).toISOString();
@@ -1268,6 +1273,7 @@
   // ------------------------------------------------------------------ início
   async function boot() {
     render();
+    if (DEMO && params.has('login')) { S.phase = 'login'; render(); return; }
     if (DEMO) { await loadBoard(); return; }
     const { data } = await sb.auth.getSession();
     if (data && data.session) await loadBoard();
