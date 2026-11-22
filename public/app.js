@@ -22,6 +22,7 @@
     edits: {},               // textos editados: `${id}:${tipo}`
     nextShown: 5,
     search: { q: '', results: null, loading: false },
+    funil: { counts: null, items: [], open: null, loading: false },
     sheet: null,
     results: null,
     busy: false,
@@ -71,6 +72,7 @@
 
   // ------------------------------------------------------------------ formatação
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const dateBr = (iso) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: TZ, day: '2-digit', month: '2-digit' });
   const money = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const time = (ts) => (ts ? new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: TZ }).format(new Date(ts)) : '');
   function phoneFmt(p) {
@@ -734,10 +736,64 @@
     return html;
   }
 
+  // Funil: em que etapa está cada cliente.
+  const STAGES = [
+    ['hoje', 'Na lista de hoje', 'Ainda vão receber a primeira mensagem', 'info'],
+    ['aguardando', 'Mensagem enviada', 'Esperando a cliente responder', 'warn'],
+    ['conversa', 'Em conversa', 'Responderam. Recebem follow-ups até comprar', 'good'],
+    ['vendeu', 'Compraram', 'Venda marcada no app', 'good'],
+    ['encerrada', 'Encerradas', 'A conversa terminou sem venda', 'muted'],
+    ['nao_quer', 'Não querem mensagens', 'O app nunca mais chama', 'bad'],
+    ['nunca', 'Ainda não chamadas', 'Vão aparecer nas próximas listas', 'muted'],
+  ];
+  async function loadFunil(stage) {
+    if (stage !== undefined) S.funil.open = stage;
+    S.funil.loading = true; renderFunil();
+    try {
+      const r = await rpc('funil', { p_stage: S.funil.open || null });
+      S.funil.counts = r.counts || {}; S.funil.items = r.items || [];
+      S.funil.error = false;
+    } catch (e) { console.error(e); S.funil.error = true; S.funil.counts = S.funil.counts || {}; }
+    S.funil.loading = false; renderFunil();
+  }
+  function funilHtml() {
+    const F = S.funil;
+    if (!F.counts) return '<section class="section"><h2 class="section-title">Funil</h2><div class="center"><div class="spin"></div></div></section>';
+    if (F.error && !Object.keys(F.counts).length) return '<section class="section"><h2 class="section-title">Funil</h2><p class="small muted">Não deu para carregar o funil agora. Toque em Clientes de novo daqui a pouco.</p></section>';
+    const active = STAGES.filter((x) => x[0] !== 'nunca').map((x) => Number(F.counts[x[0]] || 0));
+    const max = Math.max(1, ...active);
+    return `<section class="section"><h2 class="section-title">Funil</h2>
+      <p class="small muted">Toque numa etapa para ver as clientes que estão nela.</p>
+      <div class="funil">${STAGES.map(([k, t, d, cls]) => {
+        const n = Number(F.counts[k] || 0);
+        const open = F.open === k;
+        const w = k === 'nunca' ? 100 : Math.max(4, Math.round((n / max) * 100));
+        return `<button class="funil-row ${open ? 'open' : ''}" data-act="funil" data-stage="${k}" aria-expanded="${open}">
+            <span class="grow"><span class="row-name">${esc(t)}</span><span class="small muted">${esc(d)}</span>
+              <span class="funil-bar"><span class="funil-fill ${cls}" style="width:${w}%"></span></span></span>
+            <span class="funil-n">${n.toLocaleString('pt-BR')}</span>
+          </button>${open ? funilItems() : ''}`;
+      }).join('')}</div></section>`;
+  }
+  function funilItems() {
+    const F = S.funil;
+    if (F.loading) return '<div class="center"><div class="spin"></div></div>';
+    if (!F.items.length) return '<p class="small muted funil-empty">Ninguém nesta etapa agora.</p>';
+    return `<div class="list funil-list">${F.items.map((c) => `<button class="row" data-act="customer" data-code="${esc(c.code)}">
+        <span class="grow"><span class="row-name">${esc(c.name)}</span><span class="small muted">${esc(phoneFmt(c.phone))}${c.updated_at ? ' · ' + esc(dateBr(c.updated_at)) : ''}</span></span>
+        ${c.sale_value ? `<span class="status good">${esc(money(c.sale_value))}</span>` : ''}
+      </button>`).join('')}${F.items.length >= 200 ? '<p class="small muted">Mostrando as 200 mais recentes. Use a busca para achar outra.</p>' : ''}</div>`;
+  }
+  function renderFunil() {
+    const el = document.getElementById('funil-root');
+    if (el) el.innerHTML = funilHtml();
+  }
   function renderClientes() {
+    if (!S.funil.counts && !S.funil.loading) setTimeout(() => loadFunil(), 0);
+    const searching = (S.search.q || '').trim().length >= 2;
     return `<header class="top"><h1 class="title">Clientes</h1>
       <label class="search">${I.search}<input id="search-input" type="search" placeholder="Nome ou telefone" autocomplete="off" value="${esc(S.search.q)}" aria-label="Buscar cliente"></label>
-    </header><main><div id="search-results">${searchResultsHtml()}</div></main>`;
+    </header><main><div id="search-results">${searching ? searchResultsHtml() : ''}</div><div id="funil-root" ${searching ? 'hidden' : ''}>${funilHtml()}</div></main>`;
   }
   function searchResultsHtml() {
     if (S.search.loading) return '<div class="center"><div class="spin"></div></div>';
@@ -755,7 +811,10 @@
   }
   function renderSearchResults() {
     const el = document.getElementById('search-results');
-    if (el) el.innerHTML = searchResultsHtml();
+    const searching = (S.search.q || '').trim().length >= 2;
+    if (el) el.innerHTML = searching ? searchResultsHtml() : '';
+    const f = document.getElementById('funil-root');
+    if (f) f.hidden = searching;
   }
 
   function renderResultados() {
@@ -1041,6 +1100,7 @@
     },
     'results-refresh': () => loadResults(),
     catalog: () => openCatalog(),
+    funil: (ds) => loadFunil(S.funil.open === ds.stage ? null : ds.stage),
     'catalog-toggle': () => { S.catalogListOpen = !S.catalogListOpen; render(); },
     'catalog-share': (ds) => shareCatalog(ds.name),
     'catalog-del': (ds) => removeCatalog(ds.name),
@@ -1250,6 +1310,24 @@
           cycles: cycles.filter((y) => y.customer_code === p_code).map(withCu).reverse(),
           purchases: (c.last_items || []).map((d) => ({ period: c.last_period, description: d, paid: 79.9 })),
         });
+      },
+      funil({ p_stage }) {
+        const stageOf = (c) => {
+          if (c.do_not_contact) return 'nao_quer';
+          const last = cycles.filter((y) => y.customer_code === c.code).pop();
+          if (!last) return 'nunca';
+          return { pendente: 'hoje', enviada: 'aguardando', respondeu: 'conversa', vendeu: 'vendeu' }[last.status] || 'encerrada';
+        };
+        const counts = { hoje: 0, aguardando: 0, conversa: 0, vendeu: 0, encerrada: 0, nao_quer: 0, nunca: 0 };
+        customers.forEach((c) => { counts[stageOf(c)]++; });
+        // números de uma loja de verdade, para a demonstração parecer real
+        const fake = { aguardando: 46, conversa: 18, vendeu: 9, encerrada: 112, nao_quer: 7, nunca: 13180 };
+        Object.keys(fake).forEach((k) => { counts[k] += fake[k]; });
+        const items = p_stage ? customers.filter((c) => stageOf(c) === p_stage).map((c) => {
+          const last = cycles.filter((y) => y.customer_code === c.code).pop();
+          return { code: c.code, name: c.name, phone: c.phone, cidade: c.cidade, updated_at: (last && (last.updated_at || last.sent_at)) || new Date().toISOString(), sale_value: last && last.sale_value };
+        }) : [];
+        return { counts, stage: p_stage, items };
       },
       start_manual() { throw new Error('No modo demonstração não dá para adicionar clientes.'); },
       generate_daily_list() { return 0; },
