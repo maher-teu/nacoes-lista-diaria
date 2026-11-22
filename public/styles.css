@@ -160,3 +160,11 @@ table.days thead th { border-top: none; color: var(--muted); font-weight: 700; }
   body { background: #ecebe5; }
   #app { background: var(--bg); box-shadow: 0 0 0 1px var(--line); }
 }
+
+/* Campo de usuário escondido (para o celular guardar a senha) */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Carregando */
+.spinner { display: inline-block; width: 18px; height: 18px; border: 2.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 8px; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

@@ -25,7 +25,7 @@
     sheet: null,
     results: null,
     busy: false,
-    login: { role: 'loja', error: '', loading: false },
+    login: { role: (() => { try { return localStorage.getItem('lista-role') || 'loja'; } catch (e) { return 'loja'; } })(), error: '', loading: false },
     catalog: [],
     catalogBlobs: {},
     catalogOpen: false,
@@ -332,6 +332,8 @@
     setUpload(`Salvando ${items.length} peças...`);
     items.sort((a, b) => a.page - b.page);
     const res = await rpc('catalog_replace', { p_week: week, p_items: items });
+    setUpload('Apagando o catálogo antigo...');
+    await wipeOldCatalog(new Set(items.map((x) => x.image_path)));
     if (res && res.sem_descricao) {
       setUpload(`A IA está olhando ${res.sem_descricao} fotos novas...`);
       await callIa({ action: 'describe' });
@@ -343,6 +345,21 @@
     await callIa({ action: 'write', date: iso(d), force: true });
     await callIa({ action: 'write', date: iso(tomorrow), force: true });
     return items.length;
+  }
+
+  // Apaga do armazenamento tudo que não é do catálogo novo (pastas antigas e fotos soltas).
+  async function wipeOldCatalog(keep) {
+    try {
+      const st = sb.storage.from('catalogo');
+      const { data: top } = await st.list('', { limit: 1000 });
+      const del = [];
+      for (const f of top || []) {
+        if (f.id) { if (!keep.has(f.name)) del.push(f.name); continue; }
+        const { data: inner } = await st.list(f.name, { limit: 1000 });
+        (inner || []).forEach((x) => { const pth = `${f.name}/${x.name}`; if (x.id && !keep.has(pth)) del.push(pth); });
+      }
+      for (let i = 0; i < del.length; i += 100) await st.remove(del.slice(i, i + 100));
+    } catch (e) { console.error(e); }
   }
 
   async function uploadCatalog(files) {
@@ -624,7 +641,7 @@
     if (!d.novos.length) {
       return `<div class="card empty"><div class="big">A lista de hoje ainda não saiu</div>
         <div>Ela aparece aqui todo dia às 7h da manhã.</div>
-        ${b.role === 'dona' || DEMO ? '<button class="btn primary" data-act="generate">Gerar a lista agora</button>' : ''}</div>`;
+        ${b.role === 'dona' || DEMO ? (S.generating ? `<button class="btn primary" disabled aria-busy="true"><span class="spinner" aria-hidden="true"></span> ${esc(S.generating)}</button>` : '<button class="btn primary" data-act="generate">Gerar a lista agora</button>') : ''}</div>`;
     }
     let html = '';
     if (d.pend.length) {
@@ -754,12 +771,15 @@
         <button class="link-btn danger" data-act="catalog-del" data-name="${esc(f.name)}">Apagar</button></div>`).join('');
     return `<section class="section"><h2 class="section-title">Catálogo da semana</h2>
       <div class="card">
-        <p class="small muted">Suba aqui o PDF do catálogo da semana (ou fotos). O app separa uma foto por peça, e as mensagens do dia passam a recomendar peças desse catálogo. A loja manda a foto da peça direto no WhatsApp.</p>
+        <p class="small muted">Suba aqui o PDF do catálogo da semana. O catálogo novo substitui o antigo inteiro. O app separa uma foto por peça e reescreve as mensagens de hoje e de amanhã com as peças novas.</p>
         <label class="btn primary" style="cursor:pointer">${S.uploading ? 'Enviando...' : '📸 Adicionar fotos ou PDF'}
           <input type="file" id="catalog-input" accept="image/*,application/pdf,video/mp4" multiple hidden ${S.uploading ? 'disabled' : ''}></label>
         <p class="small strong" id="upload-status">${esc(S.uploading ? (S.uploadMsg || '') : '')}</p>
         ${S.catalog.some((f) => f.ref) ? `<button class="btn" data-act="ia-rewrite">✨ Reescrever as mensagens de hoje com o catálogo</button>` : ''}
-        ${items ? `<div class="list" style="max-height:420px;overflow:auto">${items}</div>` : '<p class="small muted">Nenhum arquivo ainda.</p>'}
+        ${!items ? '<p class="small muted">Nenhum arquivo ainda.</p>'
+          : `<p class="small strong">${S.catalog.length} peças no catálogo atual.</p>
+             <button class="btn" data-act="catalog-toggle">${S.catalogListOpen ? 'Esconder as fotos' : 'Ver as fotos'}</button>
+             ${S.catalogListOpen ? `<div class="list" style="max-height:420px;overflow:auto">${items}</div>` : ''}`}
       </div></section>`;
   }
 
@@ -797,7 +817,8 @@
         <button type="button" aria-pressed="${L.role === 'loja'}" data-act="login-role" data-r="loja">Loja</button>
         <button type="button" aria-pressed="${L.role === 'dona'}" data-act="login-role" data-r="dona">Dona</button>
       </div>
-      <form id="login-form" class="section">
+      <form id="login-form" class="section" method="post" action="#">
+        <input class="sr-only" type="email" name="username" autocomplete="username" value="${esc((CFG.users || {})[L.role] || '')}" readonly tabindex="-1" aria-hidden="true">
         <label class="field">Senha<input class="input" type="password" name="password" autocomplete="current-password" required></label>
         ${L.error ? `<p class="error">${esc(L.error)}</p>` : ''}
         <button class="btn primary" type="submit" ${L.loading ? 'disabled' : ''}>${L.loading ? 'Entrando...' : 'Entrar'}</button>
@@ -964,9 +985,23 @@
       renderSheet();
     },
     manual: (ds) => act(async () => { await rpc('start_manual', { p_code: ds.code }); S.view = 'hoje'; S.tab = 'novos'; S.sheet = null; }, 'Entrou na lista de hoje.'),
-    generate: () => act(() => rpc('generate_daily_list', { p_date: null, p_force: false }), 'Lista gerada.'),
+    generate: async () => {
+      if (S.generating || S.busy) return;
+      S.generating = 'Montando a lista...'; render();
+      try {
+        const n = await rpc('generate_daily_list', { p_date: null, p_force: false });
+        if (!DEMO) {
+          S.generating = 'Escrevendo as mensagens com as peças da semana... (1 a 2 minutos)'; render();
+          try { await callIa({ action: 'write' }); } catch (e) { console.error(e); }
+        }
+        await loadBoard(true);
+        toast(n ? `Lista pronta: ${n} clientes.` : 'A lista de hoje já existe.');
+      } catch (e) { console.error(e); toast(errorText(e)); }
+      S.generating = null; render();
+    },
     'results-refresh': () => loadResults(),
     catalog: () => openCatalog(),
+    'catalog-toggle': () => { S.catalogListOpen = !S.catalogListOpen; render(); },
     'catalog-share': (ds) => shareCatalog(ds.name),
     'catalog-del': (ds) => removeCatalog(ds.name),
     'ia-rewrite': async () => {
@@ -983,7 +1018,7 @@
       S.uploading = false; S.uploadMsg = '';
       await loadBoard(true); render();
     },
-    'login-role': (ds) => { S.login.role = ds.r; S.login.error = ''; render(); },
+    'login-role': (ds) => { S.login.role = ds.r; S.login.error = ''; try { localStorage.setItem('lista-role', ds.r); } catch (e) { /* sem storage */ } render(); },
     logout: async () => {
       if (DEMO) { location.href = location.pathname; return; }
       await sb.auth.signOut();
@@ -1025,6 +1060,13 @@
       const { error } = await sb.auth.signInWithPassword({ email, password });
       S.login.loading = false;
       if (error) { S.login.error = 'Senha errada. Tente de novo.'; render(); return; }
+      try { localStorage.setItem('lista-role', S.login.role); } catch (err) { /* sem storage */ }
+      // Pede ao navegador para guardar a senha neste aparelho (Chrome/Android; iPhone usa o Chaves do iCloud sozinho).
+      try {
+        if (window.PasswordCredential && navigator.credentials) {
+          await navigator.credentials.store(new window.PasswordCredential({ id: email, password, name: S.login.role === 'dona' ? 'Baummer Nações (Dona)' : 'Baummer Nações (Loja)' }));
+        }
+      } catch (err) { /* ok */ }
       S.phase = 'loading';
       render();
       await loadBoard();

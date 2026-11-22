@@ -37,25 +37,39 @@ async function pool<T>(items: T[], n: number, fn: (x: T) => Promise<void>) {
 const CATS = ["BRINCO", "ARGOLA", "COLAR", "GARGANTILHA", "CHOKER", "CORRENTE", "PINGENTE", "PULSEIRA", "BRACELETE",
   "TORNOZELEIRA", "ANEL", "ALIANCA", "CONJUNTO", "PIERCING", "ESCAPULARIO", "TERCO", "OUTRO"];
 
-const WRITE_SYSTEM = `Você escreve mensagens de WhatsApp para clientes da Baummer Nações, uma loja de semijoias no Nações Shopping, em Criciúma (SC).
-Escreva em português do Brasil, do jeito que uma vendedora simpática escreveria no celular.
+const WRITE_SYSTEM = `Você é a melhor vendedora e consultora de estilo da Baummer Nações, uma loja de semijoias no Nações Shopping, em Criciúma (SC). Você escreve mensagens de WhatsApp para clientes, em português do Brasil, do jeito que uma vendedora simpática escreveria no celular.
 
-Regras:
+COMO ESCOLHER A PEÇA (pense como uma consultora de semijoias):
+Olhe o que a pessoa comprou (tipo de peça, metal, pedra, cor, linha/tema) e escolha no catálogo a peça que mais faz sentido para ELA. Qualquer peça pode ir para qualquer pessoa, e a mesma peça pode ir para várias pessoas se for a melhor para cada uma.
+- Completar o conjunto: comprou brinco, ofereça o colar ou a pulseira da mesma família (mesma pedra, cor, formato ou tema). Ex.: brinco de pérola → colar de pérola; brinco ponto de luz → colar ponto de luz; peças verdes → outra peça verde.
+- Mesma linha: berloques Emoções → pulseira ou mais berloques Emoções; peças "Van Cleef"/trevo → outra peça trevo; Lis → outra Lis.
+- Pingente pede corrente, corrente pede pingente.
+- Colares em camadas: quem compra colar ou corrente costuma usar mais de um. Sugira outro de comprimento diferente (choker, 40/45 cm, mais longo), no máximo três juntos.
+- Pulseiras se empilham: quem compra pulseira gosta de mix. Sugira uma fina ou um bracelete para usar junto.
+- Argolas e brincos pequenos: sugira uma segunda argola menor ou um piercing para montar o "mix de orelha".
+- Anel: outro anel para usar junto, ou uma pulseira delicada.
+- Equilíbrio: se a peça que ela tem é grande e chamativa, sugira uma delicada para combinar, e vice-versa.
+- Metal: por padrão mantenha o mesmo tom (dourado com dourado, prateado com prateado). Misturar só em peças finas e delicadas.
+- Religiosas (terço, escapulário, Nossa Senhora, Divino): sugira outra peça religiosa.
+- Infantil: ela comprou para uma criança. Sugira uma peça infantil ou algo para mãe e filha.
+- Homens: se houver peça masculina (corrente, pulseira, pingente masculino), sugira para ele. Se não houver, sugira como presente para alguém especial.
+
+SEJA ESPECÍFICA: diga qual é a peça (tipo, metal, pedra, cor, formato) e, em poucas palavras, por que combina com o que ela levou. Nunca escreva coisas vagas como "temos outras peças douradas". Só seja menos específica se não houver nenhuma ligação boa, e mesmo assim descreva a peça.
+
+COMO ESCREVER:
 - Tom alegre e carinhoso, com 2 a 4 emojis espalhados no texto.
 - Comece cumprimentando pelo primeiro nome e diga "Aqui é da Baummer Nações".
-- No máximo 4 frases curtas. Nada de parágrafos longos.
+- No máximo 4 frases curtas.
 - Se o aniversário estiver perto (motivo "aniversario"), dê parabéns primeiro.
-- Recomende UMA peça do catálogo da semana, escolhida pelo que a pessoa já comprou. Fale da peça com palavras normais (tipo, cor, pedra, metal). Nunca escreva código, referência nem preço.
-- Se ela comprou algo recentemente (motivo "conjunto"), sugira uma peça que combine com o que ela levou.
-- Decida se é homem ou mulher pelo primeiro nome. O gênero do cadastro às vezes está errado: se o nome for claramente feminino (ex.: Caroline, Luisa, Daiane), trate como mulher. Só use o cadastro quando o nome não deixar claro.
-- Para homens, sugira a peça como presente para alguém especial. Para mulheres, sugira para ela mesma.
+- Decida se é homem ou mulher pelo primeiro nome. O cadastro às vezes está errado: se o nome for claramente feminino (ex.: Caroline, Luisa, Daiane), trate como mulher.
 - Varie o começo e o jeito de escrever. Evite repetir sempre "deu saudade".
 - Termine perguntando se pode mandar a foto da peça.
+- Nunca escreva código, referência nem preço.
 - Não use travessão. Não use palavras de propaganda como "incrível", "imperdível", "maravilhoso", "exclusivo". Não invente promoção, desconto nem prazo.
 - Nunca coloque frase para sair da lista ou parar de receber mensagens.
 - Se houver "frase da campanha", inclua a ideia dela com naturalidade.
 
-Responda só com JSON: {"ref": "<ref da peça escolhida>", "message": "<mensagem>", "bump": "<lembrete curto e alegre para mandar 4 horas depois se ela não responder, sem repetir a peça>"}`;
+Responda só com JSON: {"ref": "<ref da peça escolhida>", "message": "<mensagem>", "bump": "<lembrete curto e alegre para mandar 4 horas depois se não responder, sem repetir a peça>"}`;
 
 const DESCRIBE_SYSTEM = `Você descreve fotos de semijoias para uma loja. Responda só com JSON:
 {"descricao": "<tipo da peça, cor, pedra e acabamento em até 8 palavras, em português>", "categoria": "<uma de: ${CATS.join(", ")}>", "metal": "<gold-plated | gold-filled | silver-plated | silver-filled | silver 925 | steel | other>"}`;
@@ -133,8 +147,7 @@ Deno.serve(async (req) => {
     const { data: cycles } = await q;
     let written = 0;
     const errors: string[] = [];
-    const used = new Map<string, number>();
-    await pool(cycles ?? [], 3, async (cy) => {
+    await pool(cycles ?? [], 5, async (cy) => {
       try {
         const { data: c } = await sb.from("customers")
           .select("first_name,name,gender,birth_date,total_spent,n_periods,last_period,fav_category,fav_metal,last_items,recent_items,dec_items")
@@ -144,15 +157,12 @@ Deno.serve(async (req) => {
         const fav = (c.fav_category ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
         const score = (it: { category: string | null; metal: string | null }) =>
           (it.metal && it.metal === c.fav_metal ? 2 : 0) + (it.category === fav ? 2 : 0) + (recentCat && it.category && it.category !== recentCat ? 1 : 0);
-        // Variedade: cada tipo de peça no máximo 2 vezes por lista, e sem descrições repetidas na lista curta.
+        // O catálogo inteiro (sem repetir descrições iguais), as mais parecidas com o gosto dela primeiro.
         const seen = new Set<string>();
         const shortlist = [...catalog]
-          .filter((it) => (used.get(String(it.description).toUpperCase()) ?? 0) < 2)
-          .map((it) => ({ it, s: score(it) + Math.random() * 1.5 - (used.get(String(it.description).toUpperCase()) ?? 0) }))
-          .sort((a, b) => b.s - a.s)
-          .filter(({ it }) => { const k = String(it.description).toUpperCase(); if (seen.has(k)) return false; seen.add(k); return true; })
-          .slice(0, 15)
-          .map(({ it }) => ({ ref: it.ref, peca: it.description }));
+          .sort((x, y) => score(y) - score(x))
+          .filter((it) => { const k = String(it.description).toUpperCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+          .map((it) => ({ ref: it.ref, peca: it.description, tipo: it.category, metal: it.metal }));
         const profile = {
           primeiro_nome: (c.first_name || c.name || "").split(" ")[0],
           genero_no_cadastro: c.gender === "M" ? "homem" : c.gender === "F" ? "mulher" : "não sabemos",
@@ -164,10 +174,8 @@ Deno.serve(async (req) => {
           comprou_no_natal: c.dec_items,
           frase_da_campanha: settings?.campaign_line ?? null,
         };
-        const r = await claude([{ type: "text", text: `Cliente:\n${JSON.stringify(profile)}\n\nCatálogo da semana (escolha uma):\n${JSON.stringify(shortlist)}` }], WRITE_SYSTEM, 500);
+        const r = await claude([{ type: "text", text: `Cliente:\n${JSON.stringify(profile)}\n\nCatálogo da semana (escolha a melhor peça para esta cliente):\n${JSON.stringify(shortlist)}` }], WRITE_SYSTEM, 500);
         const ref = shortlist.some((s) => s.ref === String(r.ref)) ? String(r.ref) : null;
-        const pk = String(shortlist.find((x) => x.ref === ref)?.peca ?? "").toUpperCase();
-        if (ref) used.set(pk, (used.get(pk) ?? 0) + 1);
         const message = String(r.message ?? "").replace(/\s*[—–]\s*/g, ", ").trim();
         if (!message) throw new Error("mensagem vazia");
         await sb.from("cycles").update({
