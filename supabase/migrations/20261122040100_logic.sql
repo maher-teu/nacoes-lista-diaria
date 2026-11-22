@@ -273,7 +273,9 @@ begin
             where y2.customer_code = c.code
               and (y2.list_date = d
                    or y2.status in ('pendente', 'enviada', 'respondeu')
-                   or (y2.sent_at is not null and y2.sent_at > now() - make_interval(days => s.rest_days))))
+                   or (y2.sent_at is not null and y2.sent_at > now() - make_interval(days => s.rest_days))
+                   or (y2.close_reason in ('pulada:nao_mandar', 'pulada:ja_conversando')
+                       and y2.list_date > d - s.rest_days)))
     ), scored as (
       select b.*,
              (case when b.bdays between 0 and 6 then 40 else 0 end)
@@ -403,23 +405,23 @@ end $$;
 
 create or replace function public.results_summary(p_days int default 7) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
-declare d date := public.today_brt(); n int := greatest(1, least(coalesce(p_days, 7), 90));
+declare v_today date := public.today_brt(); n int := greatest(1, least(coalesce(p_days, 7), 90));
 begin
   perform public.require_staff();
   return jsonb_build_object(
     'dias', (
-      select jsonb_agg(jsonb_build_object(
-               'd', g.d,
-               'enviadas', count(e.id) filter (where e.kind = 'enviada'),
-               'lembretes', count(e.id) filter (where e.kind = 'lembrete'),
-               'respostas', count(e.id) filter (where e.kind in ('respondeu', 'parar')),
-               'follow_ups', count(e.id) filter (where e.kind = 'follow_up'),
-               'vendas', count(e.id) filter (where e.kind = 'vendeu'),
-               'valor', coalesce(sum((e.detail ->> 'value')::numeric) filter (where e.kind = 'vendeu'), 0))
-             order by g.d desc)
-        from generate_series(d - (n - 1), d, interval '1 day') as g(d)
-        left join public.events e
-          on not e.undone and (e.created_at at time zone 'America/Sao_Paulo')::date = g.d::date),
+      select jsonb_agg(to_jsonb(t) order by t.d desc) from (
+        select g.dia::date as d,
+               count(e.id) filter (where e.kind = 'enviada') as enviadas,
+               count(e.id) filter (where e.kind = 'lembrete') as lembretes,
+               count(e.id) filter (where e.kind in ('respondeu', 'parar')) as respostas,
+               count(e.id) filter (where e.kind = 'follow_up') as follow_ups,
+               count(e.id) filter (where e.kind = 'vendeu') as vendas,
+               coalesce(sum((e.detail ->> 'value')::numeric) filter (where e.kind = 'vendeu'), 0) as valor
+          from generate_series(v_today - (n - 1), v_today, interval '1 day') as g(dia)
+          left join public.events e
+            on not e.undone and (e.created_at at time zone 'America/Sao_Paulo')::date = g.dia::date
+         group by g.dia) t),
     'agora', jsonb_build_object(
       'conversando', (select count(*) from public.cycles where status = 'respondeu'),
       'aguardando', (select count(*) from public.cycles where status = 'enviada'),
@@ -547,6 +549,10 @@ begin
   if not found then raise exception 'nao_encontrado'; end if;
   if y.status in ('encerrada', 'vendeu') then return public.cycle_json(y); end if;
   perform public.log_event(y, 'encerrada', jsonb_build_object('reason', p_reason));
+  if p_reason = 'pulada:numero_errado' then
+    update public.customers set excluded_reason = 'numero_errado'
+     where code = y.customer_code and excluded_reason is null;
+  end if;
   update public.cycles set status = 'encerrada', closed_at = now(),
          close_reason = coalesce(nullif(p_reason, ''), 'encerrada'), updated_at = now()
    where id = p_id returning * into y;
@@ -595,6 +601,10 @@ begin
    where id = p_id returning * into y;
   if e.kind = 'parar' then
     update public.customers set do_not_contact = false where code = e.customer_code;
+  end if;
+  if e.kind = 'encerrada' and e.detail ->> 'reason' = 'pulada:numero_errado' then
+    update public.customers set excluded_reason = null
+     where code = e.customer_code and excluded_reason = 'numero_errado';
   end if;
   update public.events set undone = true where id = e.id;
   return public.cycle_json(y);
