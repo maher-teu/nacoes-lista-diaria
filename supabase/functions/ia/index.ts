@@ -8,7 +8,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-admin-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-haiku-5-5";
+const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-5-5";
 const KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const URL = Deno.env.get("SUPABASE_URL")!;
 
@@ -19,13 +19,13 @@ async function claude(content: unknown[], system: string, maxTokens = 600) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: "user", content }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens + 3000, system, messages: [{ role: "user", content }] }),
   });
   const j = await r.json();
   if (!r.ok) throw new Error(j?.error?.message ?? `anthropic ${r.status}`);
   const text = (j.content ?? []).filter((c: { type: string }) => c.type === "text").map((c: { text: string }) => c.text).join("");
   const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("resposta sem JSON");
+  if (!m) throw new Error(`resposta sem JSON (${j.stop_reason}): ${JSON.stringify(j.content ?? []).slice(0, 300)}`);
   return JSON.parse(m[0]);
 }
 
@@ -47,7 +47,9 @@ Regras:
 - Se o aniversário estiver perto (motivo "aniversario"), dê parabéns primeiro.
 - Recomende UMA peça do catálogo da semana, escolhida pelo que a pessoa já comprou. Fale da peça com palavras normais (tipo, cor, pedra, metal). Nunca escreva código, referência nem preço.
 - Se ela comprou algo recentemente (motivo "conjunto"), sugira uma peça que combine com o que ela levou.
-- Para homens, sugira a peça como presente para alguém especial.
+- Decida se é homem ou mulher pelo primeiro nome. O gênero do cadastro às vezes está errado: se o nome for claramente feminino (ex.: Caroline, Luisa, Daiane), trate como mulher. Só use o cadastro quando o nome não deixar claro.
+- Para homens, sugira a peça como presente para alguém especial. Para mulheres, sugira para ela mesma.
+- Varie o começo e o jeito de escrever. Evite repetir sempre "deu saudade".
 - Termine perguntando se pode mandar a foto da peça.
 - Não use travessão. Não use palavras de propaganda como "incrível", "imperdível", "maravilhoso", "exclusivo". Não invente promoção, desconto nem prazo.
 - Nunca coloque frase para sair da lista ou parar de receber mensagens.
@@ -127,10 +129,12 @@ Deno.serve(async (req) => {
     const { data: settings } = await sb.from("settings").select("campaign_line").eq("id", 1).single();
     let q = sb.from("cycles").select("id,customer_code,reasons").eq("list_date", date).eq("status", "pendente");
     if (!body.force) q = q.eq("ai", false);
+    if (body.limit) q = q.limit(Number(body.limit));
     const { data: cycles } = await q;
     let written = 0;
     const errors: string[] = [];
-    await pool(cycles ?? [], 5, async (cy) => {
+    const used = new Map<string, number>();
+    await pool(cycles ?? [], 3, async (cy) => {
       try {
         const { data: c } = await sb.from("customers")
           .select("first_name,name,gender,birth_date,total_spent,n_periods,last_period,fav_category,fav_metal,last_items,recent_items,dec_items")
@@ -140,11 +144,18 @@ Deno.serve(async (req) => {
         const fav = (c.fav_category ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
         const score = (it: { category: string | null; metal: string | null }) =>
           (it.metal && it.metal === c.fav_metal ? 2 : 0) + (it.category === fav ? 2 : 0) + (recentCat && it.category && it.category !== recentCat ? 1 : 0);
-        const shortlist = [...catalog].sort((a, b) => score(b) - score(a) || Math.random() - 0.5).slice(0, 15)
-          .map((it) => ({ ref: it.ref, peca: it.description }));
+        // Variedade: cada tipo de peça no máximo 2 vezes por lista, e sem descrições repetidas na lista curta.
+        const seen = new Set<string>();
+        const shortlist = [...catalog]
+          .filter((it) => (used.get(String(it.description).toUpperCase()) ?? 0) < 2)
+          .map((it) => ({ it, s: score(it) + Math.random() * 1.5 - (used.get(String(it.description).toUpperCase()) ?? 0) }))
+          .sort((a, b) => b.s - a.s)
+          .filter(({ it }) => { const k = String(it.description).toUpperCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+          .slice(0, 15)
+          .map(({ it }) => ({ ref: it.ref, peca: it.description }));
         const profile = {
           primeiro_nome: (c.first_name || c.name || "").split(" ")[0],
-          genero: c.gender === "M" ? "homem" : c.gender === "F" ? "mulher" : "não sabemos",
+          genero_no_cadastro: c.gender === "M" ? "homem" : c.gender === "F" ? "mulher" : "não sabemos",
           motivos: cy.reasons,
           ultimas_compras: c.last_items,
           compra_recente: c.recent_items,
@@ -155,6 +166,8 @@ Deno.serve(async (req) => {
         };
         const r = await claude([{ type: "text", text: `Cliente:\n${JSON.stringify(profile)}\n\nCatálogo da semana (escolha uma):\n${JSON.stringify(shortlist)}` }], WRITE_SYSTEM, 500);
         const ref = shortlist.some((s) => s.ref === String(r.ref)) ? String(r.ref) : null;
+        const pk = String(shortlist.find((x) => x.ref === ref)?.peca ?? "").toUpperCase();
+        if (ref) used.set(pk, (used.get(pk) ?? 0) + 1);
         const message = String(r.message ?? "").replace(/\s*[—–]\s*/g, ", ").trim();
         if (!message) throw new Error("mensagem vazia");
         await sb.from("cycles").update({
