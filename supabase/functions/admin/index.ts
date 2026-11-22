@@ -1,5 +1,5 @@
 // Tarefas de administração: criar os logins da loja e da dona, trocar senha, gerar a lista.
-// Protegido por um segredo (ADMIN_SECRET) guardado nos secrets das Edge Functions.
+// Protegido por um segredo guardado em private.config (conferido por check_secret).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const CORS = {
@@ -17,15 +17,16 @@ function json(body: unknown, status = 200) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  const secret = Deno.env.get("ADMIN_SECRET");
-  if (!secret || req.headers.get("x-admin-secret") !== secret) {
-    return json({ error: "forbidden" }, 403);
-  }
   const sb = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { persistSession: false } },
   );
+  const { data: allowed } = await sb.rpc("check_secret", {
+    p_name: "admin_secret",
+    p_value: req.headers.get("x-admin-secret") ?? "",
+  });
+  if (allowed !== true) return json({ error: "forbidden" }, 403);
   const body = await req.json().catch(() => ({}));
   const action = body.action as string;
 

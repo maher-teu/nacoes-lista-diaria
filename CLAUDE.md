@@ -16,7 +16,7 @@ Daily WhatsApp outreach list for a semi-jewelry store (Nações Shopping, Crici�
 - Supabase Postgres. Tables have RLS on with **no policies**; the app only calls `security definer` RPC functions, each starting with `require_staff()`. Roles come from `profiles` (`loja`, `dona`).
 - `generate_daily_list()` runs at 10:00 UTC (07:00 America/Sao_Paulo) via pg_cron. It expires unsent cards, closes yesterday's non-replies, scores customers, and writes `cycles` with `build_msg()` messages.
 - `cycles` = one outreach attempt per customer per day: `pendente → enviada → (respondeu → follow-ups) → vendeu | encerrada`. Every action writes `events` with a `before` snapshot so `undo_last()` can revert it.
-- Edge functions: `importar` (batch upserts from the Linx export, header `x-import-secret`) and `admin` (create logins, generate a list, header `x-admin-secret`). Secrets live in Supabase Edge Function secrets, never in code.
+- Edge functions: `importar` (batch upserts from the Linx export, header `x-import-secret`) and `admin` (create logins, generate a list, header `x-admin-secret`). Secrets live in `private.config` (checked with `check_secret()`, service role only), never in code.
 - Vercel serves `public/` (see `vercel.json`). Pushing to `main` deploys.
 
 ## Changing the database

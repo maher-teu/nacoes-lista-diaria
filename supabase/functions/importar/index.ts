@@ -1,5 +1,5 @@
 // Recebe lotes de dados vindos da Linx (pelo navegador) e grava no banco.
-// Protegido por um segredo (IMPORT_SECRET) guardado nos secrets das Edge Functions.
+// Protegido por um segredo guardado em private.config (conferido por check_secret).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const CORS = {
@@ -23,10 +23,16 @@ function json(body: unknown, status = 200) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  const secret = Deno.env.get("IMPORT_SECRET");
-  if (!secret || req.headers.get("x-import-secret") !== secret) {
-    return json({ error: "forbidden" }, 403);
-  }
+  const sb = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { persistSession: false } },
+  );
+  const { data: allowed } = await sb.rpc("check_secret", {
+    p_name: "import_secret",
+    p_value: req.headers.get("x-import-secret") ?? "",
+  });
+  if (allowed !== true) return json({ error: "forbidden" }, 403);
   let payload: { table?: string; rows?: unknown[] };
   try {
     payload = await req.json();
@@ -37,11 +43,6 @@ Deno.serve(async (req) => {
   if (!table || !(table in TABLES) || !Array.isArray(rows) || rows.length === 0 || rows.length > 5000) {
     return json({ error: "bad request" }, 400);
   }
-  const sb = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    { auth: { persistSession: false } },
-  );
   const { onConflict } = TABLES[table];
   const { error } = onConflict
     ? await sb.from(table).upsert(rows, { onConflict })
