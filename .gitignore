@@ -1,0 +1,12 @@
+# Nunca subir dados de clientes
+*.csv
+*.xlsx
+*.xls
+data/
+exports/
+
+.env
+.env.*
+.vercel
+.DS_Store
+node_modules/
