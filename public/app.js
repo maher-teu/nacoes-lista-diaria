@@ -300,6 +300,14 @@
     const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
     const week = new Date().toISOString().slice(0, 10);
     const items = [];
+    const inflight = new Set();
+    const upPhoto = async (path, blob, item) => {
+      for (let t = 0; t < 3; t++) {
+        const { error } = await sb.storage.from('catalogo').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+        if (!error) { items.push(item); return; }
+        console.error(error);
+      }
+    };
     for (let i = 1; i <= pdf.numPages; i++) {
       setUpload(`Lendo página ${i} de ${pdf.numPages}...`);
       const page = await pdf.getPage(i);
@@ -313,11 +321,16 @@
       await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
       const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.82));
       const path = `semana-${week}/${ref}.jpg`;
-      const { error } = await sb.storage.from('catalogo').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
-      if (error) { console.error(error); continue; }
-      items.push({ ref, page: i, price: priceTxt ? Number(priceTxt.replace(/\./g, '').replace(',', '.')) : null, image_path: path });
+      const item = { ref, page: i, price: priceTxt ? Number(priceTxt.replace(/\./g, '').replace(',', '.')) : null, image_path: path };
+      // Upload in the background (up to 5 at once) while the next page renders.
+      const job = upPhoto(path, blob, item).finally(() => inflight.delete(job));
+      inflight.add(job);
+      if (inflight.size >= 5) await Promise.race(inflight);
     }
+    setUpload('Terminando de enviar as fotos...');
+    await Promise.all(inflight);
     setUpload(`Salvando ${items.length} peças...`);
+    items.sort((a, b) => a.page - b.page);
     const res = await rpc('catalog_replace', { p_week: week, p_items: items });
     if (res && res.sem_descricao) {
       setUpload(`A IA está olhando ${res.sem_descricao} fotos novas...`);
