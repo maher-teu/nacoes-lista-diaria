@@ -1,6 +1,6 @@
 # Lista do dia · Nações Shopping (Criciúma)
 
-Every morning at 7:00 the store phone gets a list of customers to message on WhatsApp, each with a ready, personal message built from what they bought. Staff tap a button, WhatsApp opens with the message typed, they send it and mark it done. The app also handles the same-day reminder for people who didn't reply and the follow-ups for people who did.
+Every morning at 7:00 the store phone (Baummer Nações) gets a list of customers to message on WhatsApp, each with a ready, personal message built from what they bought. Staff tap a button, WhatsApp opens with the message typed, they send it and mark it done. The app also handles the same-day reminder for people who didn't reply and the follow-ups for people who did.
 
 The app and every message are in Portuguese. This README is in English for Maher.
 

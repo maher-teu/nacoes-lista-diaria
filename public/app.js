@@ -26,6 +26,10 @@
     results: null,
     busy: false,
     login: { role: 'loja', error: '', loading: false },
+    catalog: [],
+    catalogBlobs: {},
+    catalogOpen: false,
+    uploading: false,
   };
 
   // ------------------------------------------------------------------ textos fixos
@@ -44,12 +48,12 @@
     { k: 'nao_mandar', label: 'Melhor não mandar' },
   ];
   const FOLLOWUPS = [
-    (n) => `Oi ${n}! Conseguiu ver as fotos? Se quiser, separo as peças pra você passar aqui na loja.`,
-    (n) => `Oi ${n}, tudo bem? Ficou alguma dúvida sobre as peças? Posso te mandar mais opções.`,
-    (n) => `Oi ${n}! Chegaram mais novidades essa semana. Quer que eu te mande?`,
-    (n) => `Oi ${n}, as peças que você gostou ainda estão aqui. Quer que eu reserve pra você?`,
-    (n) => `Oi ${n}! Se precisar de um presente, é só me chamar por aqui.`,
-    (n) => `Oi ${n}, tudo bem? Qualquer coisa que precisar, estou por aqui.`,
+    (n) => `Oi ${n}! 😊 Conseguiu ver as fotos? Se quiser, separo as peças pra você passar aqui na loja 💛`,
+    (n) => `Oiê, ${n}! ✨ Ficou alguma dúvida sobre as peças? Posso te mandar mais opções 📸`,
+    (n) => `Oi ${n}! Chegou novidade essa semana 😍 Quer que eu te mande umas fotos?`,
+    (n) => `${n}, as peças que você gostou ainda estão aqui 💍 Quer que eu reserve pra você?`,
+    (n) => `Oi ${n}! Se precisar de um presente, é só me chamar por aqui 🎁`,
+    (n) => `Oi ${n}! 💛 Passando pra te dar um oi. Qualquer coisa, estou por aqui!`,
   ];
   const WEEKDAY_FULL = { domingo: 'domingo', segunda: 'segunda', 'terça': 'terça', quarta: 'quarta', quinta: 'quinta', sexta: 'sexta', 'sábado': 'sábado' };
 
@@ -257,10 +261,68 @@
   }
 
   // ------------------------------------------------------------------ carregamento
+  async function loadCatalog() {
+    if (DEMO) { S.catalog = []; return; }
+    try {
+      const { data, error } = await sb.storage.from('catalogo').list('', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+      if (error) throw error;
+      S.catalog = (data || []).filter((f) => f.name && !f.name.startsWith('.')).map((f) => ({
+        name: f.name,
+        url: sb.storage.from('catalogo').getPublicUrl(f.name).data.publicUrl,
+        type: (f.metadata && f.metadata.mimetype) || '',
+      }));
+    } catch (e) { console.error(e); S.catalog = []; }
+    if (S.view === 'hoje' || S.view === 'resultados') render();
+  }
+
+  async function uploadCatalog(files) {
+    if (!files || !files.length || S.uploading) return;
+    S.uploading = true; render();
+    let ok = 0;
+    for (const f of files) {
+      const clean = f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '-');
+      const { error } = await sb.storage.from('catalogo').upload(`${Date.now()}-${clean}`, f, { upsert: false, contentType: f.type || undefined });
+      if (error) console.error(error); else ok++;
+    }
+    S.uploading = false;
+    await loadCatalog();
+    toast(ok === files.length ? `${ok} arquivo(s) no catálogo.` : `Subiram ${ok} de ${files.length}. Tente os outros de novo.`);
+  }
+
+  async function removeCatalog(name) {
+    const { error } = await sb.storage.from('catalogo').remove([name]);
+    if (error) { toast('Não deu para apagar. Tente de novo.'); return; }
+    await loadCatalog();
+    toast('Arquivo apagado do catálogo.');
+  }
+
+  async function openCatalog() {
+    S.catalogOpen = true;
+    renderSheet();
+    for (const f of S.catalog) {
+      if (S.catalogBlobs[f.name]) continue;
+      try {
+        const b = await (await fetch(f.url)).blob();
+        S.catalogBlobs[f.name] = new File([b], f.name.replace(/^\d+-/, ''), { type: b.type || f.type });
+      } catch (e) { /* abre pelo link */ }
+    }
+  }
+
+  function shareCatalog(name) {
+    const file = S.catalogBlobs[name];
+    const item = S.catalog.find((x) => x.name === name);
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file] }).catch(() => {});
+      return;
+    }
+    if (item) window.open(item.url, '_blank');
+  }
+
   async function loadBoard(silent) {
     try {
       S.board = await rpc('today_board');
       S.phase = 'app';
+      loadCatalog();
     } catch (e) {
       console.error(e);
       if (String(e.message || '').includes('sem_permissao') && !DEMO) {
@@ -453,6 +515,7 @@
         <div class="bar"><span style="width:${pct}%"></span></div>
       </div>
       ${camp ? `<div class="banner"><span>${I.gift}</span><span><b>Campanha:</b> ${esc(camp)}</span></div>` : ''}
+      ${S.catalog.length ? `<button class="btn" data-act="catalog">📸 Catálogo da semana (${S.catalog.length})</button>` : ''}
       <div class="tabs" role="tablist">
         ${tabBtn('novos', 'Novos', d.pend.length)}
         ${tabBtn('lembretes', 'Lembretes', d.lembDue.length)}
@@ -584,11 +647,25 @@
       ${stat('Em conversa', a.conversando)}${stat('Esperando resposta', a.aguardando)}
       ${stat('Vendas no total', a.vendas, a.valor ? money(a.valor) : '')}${stat('Não querem mais', a.nao_querem)}
     </div><p class="small muted">${esc(Number(a.clientes_com_whatsapp || 0).toLocaleString('pt-BR'))} clientes com WhatsApp na base.</p></section>`;
-    if (role === 'dona') html += renderSettings();
+    if (role === 'dona') html += renderCatalogAdmin() + renderSettings();
     html += `<button class="btn" data-act="logout">${DEMO ? 'Sair do modo demonstração' : 'Sair desta conta'}</button></main>`;
     return html;
   }
   const stat = (label, n, sub) => `<div class="stat"><span class="small muted">${esc(label)}</span><span class="num">${n === null || n === undefined ? '' : esc(n)}</span>${sub ? `<span class="small muted">${esc(sub)}</span>` : ''}</div>`;
+
+  function renderCatalogAdmin() {
+    const items = S.catalog.map((f) => `<div class="row" style="min-height:56px">
+        ${/^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name) ? `<img src="${esc(f.url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:8px">` : '<span class="rank">PDF</span>'}
+        <span class="grow small">${esc(f.name.replace(/^\d+-/, ''))}</span>
+        <button class="link-btn danger" data-act="catalog-del" data-name="${esc(f.name)}">Apagar</button></div>`).join('');
+    return `<section class="section"><h2 class="section-title">Catálogo da semana</h2>
+      <div class="card">
+        <p class="small muted">Suba aqui as fotos, vídeos ou o PDF das novidades da semana. A loja vê tudo na tela de hoje e manda direto no WhatsApp para as clientes.</p>
+        <label class="btn primary" style="cursor:pointer">${S.uploading ? 'Enviando...' : '📸 Adicionar fotos ou PDF'}
+          <input type="file" id="catalog-input" accept="image/*,application/pdf,video/mp4" multiple hidden ${S.uploading ? 'disabled' : ''}></label>
+        ${items ? `<div class="list">${items}</div>` : '<p class="small muted">Nenhum arquivo ainda.</p>'}
+      </div></section>`;
+  }
 
   function renderSettings() {
     const s = (S.board && S.board.settings) || {};
@@ -619,7 +696,7 @@
     const L = S.login;
     return `<div class="login">
       <div class="logo">${I.gift}</div>
-      <div><h1 class="title">Lista do dia</h1><p class="muted">Loja do Nações Shopping</p></div>
+      <div><h1 class="title">Lista do dia</h1><p class="muted">Baummer Nações</p></div>
       <div class="seg" role="group" aria-label="Quem está entrando">
         <button type="button" aria-pressed="${L.role === 'loja'}" data-act="login-role" data-r="loja">Loja</button>
         <button type="button" aria-pressed="${L.role === 'dona'}" data-act="login-role" data-r="dona">Dona</button>
@@ -632,7 +709,20 @@
     </div>`;
   }
 
+  function renderCatalogSheet() {
+    const items = S.catalog.map((f) => {
+      const isImg = /^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name);
+      return `<div class="card" style="gap:10px">
+        ${isImg ? `<img src="${esc(f.url)}" alt="" style="width:100%;border-radius:10px">` : `<p class="strong">${esc(f.name.replace(/^\d+-/, ''))}</p>`}
+        <button class="btn primary" data-act="catalog-share" data-name="${esc(f.name)}">${I.wa} Enviar no WhatsApp</button></div>`;
+    }).join('');
+    return `<div class="sheet-bg" data-act="sheet-close"><div class="sheet" data-stop role="dialog" aria-label="Catálogo da semana">
+      <div class="top-row"><h2 class="title">Catálogo da semana</h2><button class="link-btn" data-act="sheet-close">Fechar</button></div>
+      <p class="small muted">Toque em Enviar, escolha o WhatsApp e a conversa da cliente.</p>${items}</div></div>`;
+  }
+
   function renderSheetHtml() {
+    if (S.catalogOpen) return renderCatalogSheet();
     const c = S.sheet;
     if (!c) return '';
     if (c.loading) return `<div class="sheet-bg" data-act="sheet-close"><div class="sheet" data-stop><div class="center"><div class="spin"></div></div></div></div>`;
@@ -642,7 +732,7 @@
     const canReply = last && (last.status === 'enviada' || (last.status === 'encerrada' && last.close_reason === 'sem_resposta'));
     const canSell = last && (last.status === 'enviada' || last.status === 'respondeu');
     const canAdd = (!last || ['encerrada', 'vendeu'].includes(last.status)) && !c.do_not_contact && c.phone;
-    const store = (S.board && S.board.settings && S.board.settings.store_name) || 'loja do Nações Shopping';
+    const store = (S.board && S.board.settings && S.board.settings.store_name) || 'Baummer Nações';
     const info = [
       ['Celular', phoneFmt(c.phone)],
       ['Cidade', [c.bairro, c.cidade].filter(Boolean).join(', ')],
@@ -773,11 +863,15 @@
     'sheet-close': (ds, el, e) => {
       if (e.target.closest('[data-stop]') && !el.matches('.link-btn')) return;
       S.sheet = null;
+      S.catalogOpen = false;
       renderSheet();
     },
     manual: (ds) => act(async () => { await rpc('start_manual', { p_code: ds.code }); S.view = 'hoje'; S.tab = 'novos'; S.sheet = null; }, 'Entrou na lista de hoje.'),
     generate: () => act(() => rpc('generate_daily_list', { p_date: null, p_force: false }), 'Lista gerada.'),
     'results-refresh': () => loadResults(),
+    catalog: () => openCatalog(),
+    'catalog-share': (ds) => shareCatalog(ds.name),
+    'catalog-del': (ds) => removeCatalog(ds.name),
     'login-role': (ds) => { S.login.role = ds.r; S.login.error = ''; render(); },
     logout: async () => {
       if (DEMO) { location.href = location.pathname; return; }
@@ -803,6 +897,10 @@
     const t = e.target;
     if (t.matches('textarea[data-edit]')) S.edits[t.dataset.edit] = t.value;
     if (t.id === 'search-input') onSearch(t.value);
+  });
+
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'catalog-input') uploadCatalog([...e.target.files]);
   });
 
   document.addEventListener('submit', async (e) => {
@@ -853,19 +951,19 @@
     const today = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
     const ago = (h) => new Date(Date.now() - h * 3600e3).toISOString();
     const people = [
-      ['Ana Souza', 'Ana', ['aniversario:2:quarta', 'natal', 'conjunto', 'vip', 'frequente:9'], 'Oi Ana, tudo bem? Aqui é da loja do Nações Shopping. Seu aniversário é nesta quarta, então já deixamos nosso feliz aniversário adiantado! E como está o brinco que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
-      ['Beatriz Lima', 'Beatriz', ['aniversario:1:terça', 'natal', 'sumida', 'vip'], 'Oi Beatriz, tudo bem? Aqui é da loja do Nações Shopping. Amanhã é seu aniversário, né? Feliz aniversário adiantado! Faz um tempinho que você não passa aqui, e chegaram pulseiras novas folheadas a ouro que são a sua cara. Quer que a gente separe algumas pra você ver?'],
-      ['Carla Mendes', 'Carla', ['natal', 'vip', 'frequente:7'], 'Oi Carla, tudo bem? Aqui é da loja do Nações Shopping. No Natal passado você levou corrente e pingente com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
-      ['Daniela Rocha', 'Daniela', ['conjunto', 'boa_cliente'], 'Oi Daniela, tudo bem? Aqui é da loja do Nações Shopping. Como está o colar de zircônia que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
-      ['Elaine Costa', 'Elaine', ['sumida', 'vip', 'frequente:5'], 'Oi Elaine, tudo bem? Aqui é da loja do Nações Shopping. Faz um tempinho que você não passa aqui, e chegaram brincos novos folheados a ouro que são a sua cara. Quer ver algumas fotos?'],
-      ['Fernanda Alves', 'Fernanda', ['natal', 'sumida'], 'Oi Fernanda, tudo bem? Aqui é da loja do Nações Shopping. No Natal passado você levou anel e brinco com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
-      ['Gabriela Nunes', 'Gabriela', ['aniversario:5:sábado', 'boa_cliente'], 'Oi Gabriela, tudo bem? Aqui é da loja do Nações Shopping. Seu aniversário é neste sábado, então já deixamos nosso feliz aniversário adiantado! Chegaram argolas novas banhadas a ouro, bem do jeito que você gosta. Quer que a gente te mande fotos?'],
-      ['Helena Dias', 'Helena', ['sumida', 'frequente:4'], 'Oi Helena, tudo bem? Aqui é da loja do Nações Shopping. Faz um tempinho que você não passa aqui, e chegaram colares novos de prata 925 que são a sua cara. Quer que a gente separe algumas pra você ver?'],
-      ['Isabela Martins', 'Isabela', ['natal', 'boa_cliente'], 'Oi Isabela, tudo bem? Aqui é da loja do Nações Shopping. No Natal passado você levou pulseira com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
-      ['Juliana Pereira', 'Juliana', ['sumida'], 'Oi Juliana, tudo bem? Aqui é da loja do Nações Shopping. Faz um tempinho que você não passa aqui, e chegaram anéis novos folheados a ouro que são a sua cara. Quer ver algumas fotos?'],
+      ['Ana Souza', 'Ana', ['aniversario:2:quarta', 'natal', 'conjunto', 'vip', 'frequente:9'], 'Oi Ana, tudo bem? Aqui é da Baummer Nações. Seu aniversário é nesta quarta, então já deixamos nosso feliz aniversário adiantado! E como está o brinco que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
+      ['Beatriz Lima', 'Beatriz', ['aniversario:1:terça', 'natal', 'sumida', 'vip'], 'Oi Beatriz, tudo bem? Aqui é da Baummer Nações. Amanhã é seu aniversário, né? Feliz aniversário adiantado! Faz um tempinho que você não passa aqui, e chegaram pulseiras novas folheadas a ouro que são a sua cara. Quer que a gente separe algumas pra você ver?'],
+      ['Carla Mendes', 'Carla', ['natal', 'vip', 'frequente:7'], 'Oi Carla, tudo bem? Aqui é da Baummer Nações. No Natal passado você levou corrente e pingente com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
+      ['Daniela Rocha', 'Daniela', ['conjunto', 'boa_cliente'], 'Oi Daniela, tudo bem? Aqui é da Baummer Nações. Como está o colar de zircônia que você levou? Chegaram peças que combinam com ele e formam o conjunto. Quer que a gente te mande fotos?'],
+      ['Elaine Costa', 'Elaine', ['sumida', 'vip', 'frequente:5'], 'Oi Elaine, tudo bem? Aqui é da Baummer Nações. Faz um tempinho que você não passa aqui, e chegaram brincos novos folheados a ouro que são a sua cara. Quer ver algumas fotos?'],
+      ['Fernanda Alves', 'Fernanda', ['natal', 'sumida'], 'Oi Fernanda, tudo bem? Aqui é da Baummer Nações. No Natal passado você levou anel e brinco com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
+      ['Gabriela Nunes', 'Gabriela', ['aniversario:5:sábado', 'boa_cliente'], 'Oi Gabriela, tudo bem? Aqui é da Baummer Nações. Seu aniversário é neste sábado, então já deixamos nosso feliz aniversário adiantado! Chegaram argolas novas banhadas a ouro, bem do jeito que você gosta. Quer que a gente te mande fotos?'],
+      ['Helena Dias', 'Helena', ['sumida', 'frequente:4'], 'Oi Helena, tudo bem? Aqui é da Baummer Nações. Faz um tempinho que você não passa aqui, e chegaram colares novos de prata 925 que são a sua cara. Quer que a gente separe algumas pra você ver?'],
+      ['Isabela Martins', 'Isabela', ['natal', 'boa_cliente'], 'Oi Isabela, tudo bem? Aqui é da Baummer Nações. No Natal passado você levou pulseira com a gente, e a coleção deste ano já chegou. Quer que a gente te mande algumas ideias?'],
+      ['Juliana Pereira', 'Juliana', ['sumida'], 'Oi Juliana, tudo bem? Aqui é da Baummer Nações. Faz um tempinho que você não passa aqui, e chegaram anéis novos folheados a ouro que são a sua cara. Quer ver algumas fotos?'],
     ];
     let seq = 1;
-    const settings = { id: 1, daily_new: 50, bump_hours: 4, followup_every_days: 2, followup_max: 12, rest_days: 60, store_name: 'loja do Nações Shopping', campaign_line: null };
+    const settings = { id: 1, daily_new: 50, bump_hours: 4, followup_every_days: 2, followup_max: 12, rest_days: 60, store_name: 'Baummer Nações', campaign_line: null };
     const customers = people.map((p, i) => ({
       code: `D${i + 1}`, name: p[0], first_name: p[1], phone: `5548${String(991000000 + i * 1371)}`, cidade: 'Criciúma', bairro: 'Centro',
       total_spent: 820 - i * 61, last_period: i % 2 ? '2025-12' : '2026-04', n_periods: 3 + (i % 5),
