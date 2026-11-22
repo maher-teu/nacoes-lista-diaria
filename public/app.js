@@ -144,11 +144,20 @@
   }
 
   // ------------------------------------------------------------------ API
+  // Barra de carregamento no topo sempre que algo está sendo buscado ou salvo.
+  let pending = 0;
+  function loading(on) {
+    pending = Math.max(0, pending + (on ? 1 : -1));
+    document.documentElement.classList.toggle('is-loading', pending > 0);
+  }
   async function rpc(name, args) {
-    if (DEMO) return Demo.rpc(name, args || {});
-    const { data, error } = await sb.rpc(name, args || {});
-    if (error) throw error;
-    return data;
+    loading(true);
+    try {
+      if (DEMO) { await new Promise((r) => setTimeout(r, 250)); return Demo.rpc(name, args || {}); }
+      const { data, error } = await sb.rpc(name, args || {});
+      if (error) throw error;
+      return data;
+    } finally { loading(false); }
   }
 
   function allCycles() {
@@ -162,11 +171,22 @@
     const n = (c.followups_done || 0);
     return FOLLOWUPS[n % FOLLOWUPS.length](fname(c.customer));
   }
+  // Cada frase numa linha, com uma linha em branco entre elas (regra da loja para WhatsApp).
+  function spaced(text) {
+    let t = String(text || '').replace(/\r/g, '').trim();
+    if (!t) return t;
+    if (!/\n/.test(t)) {
+      t = t.replace(/([.!?…]+["”)]?(?:\s*\p{Extended_Pictographic}[\uFE0F\u200D\p{Extended_Pictographic}]*)*)\s+(?=[A-ZÀ-Ý0-9¿¡"“])/gu, '$1\n')
+        .replace(/(\p{Extended_Pictographic}[\uFE0F\u200D\p{Extended_Pictographic}]*)\s+(?=[A-ZÀ-Ý])/gu, '$1\n');
+    }
+    return t.split(/\n+/).map((x) => x.trim()).filter(Boolean).join('\n\n');
+  }
+  const msgRows = (t) => Math.min(20, Math.max(4, String(t || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 32)), 0) + 1));
   function defaultMsg(c, kind) {
     if (!c) return '';
-    if (kind === 'lembrete') return c.bump_message;
-    if (kind === 'follow') return followMsg(c);
-    return c.message;
+    if (kind === 'lembrete') return spaced(c.bump_message);
+    if (kind === 'follow') return spaced(followMsg(c));
+    return spaced(c.message);
   }
   const getMsg = (id, kind) => S.edits[`${id}:${kind}`] ?? defaultMsg(cycleById(id), kind);
 
@@ -279,6 +299,10 @@
   }
 
   async function callIa(body) {
+    loading(true);
+    try { return await callIaRaw(body); } finally { loading(false); }
+  }
+  async function callIaRaw(body) {
     const { data } = await sb.auth.getSession();
     const r = await fetch(`${CFG.supabaseUrl}/functions/v1/ia`, {
       method: 'POST',
@@ -477,7 +501,7 @@
   function msgBox(c, kind, label) {
     const key = `${c.id}:${kind}`;
     return `<div class="msg-box"><span class="msg-label">${esc(label)}</span>
-      <textarea class="msg" data-edit="${key}" rows="${Math.min(12, Math.max(4, Math.ceil(String(getMsg(c.id, kind) || '').length / 32) + 1))}" aria-label="${esc(label)}">${esc(getMsg(c.id, kind))}</textarea></div>`;
+      <textarea class="msg" data-edit="${key}" rows="${msgRows(getMsg(c.id, kind))}" aria-label="${esc(label)}">${esc(getMsg(c.id, kind))}</textarea></div>`;
   }
   function waButtons(c, kind, label) {
     return `<div class="btns">
@@ -882,9 +906,15 @@
       ${(c.purchases || []).length ? `<section class="section"><h3 class="section-title">Compras</h3><div class="list">${c.purchases.map((p) => `<div class="row"><span class="grow"><span>${esc(itemTxt(p.description))}</span><span class="small muted">${esc(period(p.period))}</span></span><span class="strong">${esc(money(p.paid))}</span></div>`).join('')}</div></section>` : ''}
     </div></div>`;
   }
+  let sheetWasOpen = false;
   function renderSheet() {
     const root = document.getElementById('sheet-root');
-    if (root) root.innerHTML = renderSheetHtml();
+    if (!root) return;
+    const html = renderSheetHtml();
+    root.innerHTML = html;
+    const open = !!html;
+    if (open && !sheetWasOpen) { const el = root.querySelector('.sheet'); if (el) el.classList.add('sheet-in'); }
+    sheetWasOpen = open;
   }
 
   // ------------------------------------------------------------------ toast
@@ -913,8 +943,16 @@
       html = renderResultados();
     }
     root.innerHTML = html + renderNav();
+    const key = `${S.view}:${S.tab}`;
+    if (key !== lastViewKey) {
+      lastViewKey = key;
+      root.classList.remove('view-enter'); void root.offsetWidth; root.classList.add('view-enter');
+      clearTimeout(viewTimer); viewTimer = setTimeout(() => root.classList.remove('view-enter'), 400);
+    }
     renderSheet();
   }
+  let lastViewKey = '';
+  let viewTimer = null;
 
   // ------------------------------------------------------------------ eventos
   const handlers = {
@@ -1028,6 +1066,7 @@
     },
   };
 
+  const NO_SPIN = new Set(['nav', 'sheet-close', 'login-role', 'catalog-toggle']);
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
     if (!el) return;
@@ -1035,7 +1074,11 @@
     if (act === 'sheet-close' && el.classList.contains('sheet-bg') && e.target !== el) return;
     if (handlers[act]) {
       e.preventDefault();
-      handlers[act](el.dataset, el, e);
+      const r = handlers[act](el.dataset, el, e);
+      if (r && typeof r.then === 'function' && el.isConnected && !NO_SPIN.has(act)) {
+        el.classList.add('btn-busy'); el.setAttribute('aria-busy', 'true');
+        r.finally(() => { el.classList.remove('btn-busy'); el.removeAttribute('aria-busy'); });
+      }
     }
   });
 

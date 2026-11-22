@@ -54,12 +54,16 @@ Olhe o que a pessoa comprou (tipo de peça, metal, pedra, cor, linha/tema) e esc
 - Infantil: ela comprou para uma criança. Sugira uma peça infantil ou algo para mãe e filha.
 - Homens: se houver peça masculina (corrente, pulseira, pingente masculino), sugira para ele. Se não houver, sugira como presente para alguém especial.
 
-SEJA ESPECÍFICA: diga qual é a peça (tipo, metal, pedra, cor, formato) e, em poucas palavras, por que combina com o que ela levou. Nunca escreva coisas vagas como "temos outras peças douradas". Só seja menos específica se não houver nenhuma ligação boa, e mesmo assim descreva a peça.
+SEJA ESPECÍFICA, SEMPRE COM O QUE E O PORQUÊ:
+1. O QUE: diga exatamente qual é a peça (tipo, metal, pedra, cor, formato, tamanho quando ajudar).
+2. POR QUE: diga por que você escolheu essa peça para ELA, ligando com o que ela comprou (ex.: "faz conjunto com o brinco de pérola que você levou", "fica lindo em camadas com a sua corrente de 40 cm", "é a base para os seus berloques Emoções").
+Nunca escreva coisas vagas como "temos outras peças douradas" ou "tem a sua cara" sem dizer o motivo. Se o que ela comprou não tem ligação com joias (ex.: óculos de sol), use outro motivo verdadeiro e diga qual (presente de Natal, aniversário, peça fácil de usar todo dia).
 
 COMO ESCREVER:
 - Tom alegre e carinhoso, com 2 a 4 emojis espalhados no texto.
 - Comece cumprimentando pelo primeiro nome e diga "Aqui é da Baummer Nações".
-- No máximo 4 frases curtas.
+- No máximo 4 ou 5 frases curtas.
+- Cada frase sozinha numa linha, com uma linha em branco entre as frases (no JSON use \\n\\n entre as frases).
 - Se o aniversário estiver perto (motivo "aniversario"), dê parabéns primeiro.
 - Decida se é homem ou mulher pelo primeiro nome. O cadastro às vezes está errado: se o nome for claramente feminino (ex.: Caroline, Luisa, Daiane), trate como mulher.
 - Varie o começo e o jeito de escrever. Evite repetir sempre "deu saudade".
@@ -176,10 +180,11 @@ Deno.serve(async (req) => {
         };
         const r = await claude([{ type: "text", text: `Cliente:\n${JSON.stringify(profile)}\n\nCatálogo da semana (escolha a melhor peça para esta cliente):\n${JSON.stringify(shortlist)}` }], WRITE_SYSTEM, 500);
         const ref = shortlist.some((s) => s.ref === String(r.ref)) ? String(r.ref) : null;
-        const message = String(r.message ?? "").replace(/\s*[—–]\s*/g, ", ").trim();
+        const lines = (t: string) => t.replace(/\r/g, "").split(/\n+/).map((x) => x.trim()).filter(Boolean).join("\n\n");
+        const message = lines(String(r.message ?? "").replace(/\s*[—–]\s*/g, ", "));
         if (!message) throw new Error("mensagem vazia");
         await sb.from("cycles").update({
-          message, bump_message: String(r.bump ?? "").replace(/\s*[—–]\s*/g, ", ").trim() || undefined,
+          message, bump_message: lines(String(r.bump ?? "").replace(/\s*[—–]\s*/g, ", ")) || undefined,
           catalog_ref: ref, ai: true, updated_at: new Date().toISOString(),
         }).eq("id", cy.id).eq("status", "pendente");
         written++;

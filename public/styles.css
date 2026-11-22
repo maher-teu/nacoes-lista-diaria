@@ -168,3 +168,23 @@ table.days thead th { border-top: none; color: var(--muted); font-weight: 700; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 8px; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+/* Barra de carregamento no topo */
+html::before { content: ""; position: fixed; top: 0; left: 0; height: 3px; width: 100%; z-index: 9999; pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, var(--brand) 30%, #f2b84b 50%, var(--brand) 70%, transparent 100%);
+  background-size: 200% 100%; opacity: 0; transition: opacity .2s; }
+html.is-loading::before { opacity: 1; animation: loadbar 1.1s linear infinite; }
+@keyframes loadbar { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Botão apertado mostra que está trabalhando */
+.btn-busy { position: relative; pointer-events: none; opacity: .85; }
+.btn-busy::after { content: ""; width: 16px; height: 16px; margin-left: 8px; border: 2.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+
+/* Telas e cards entram suavemente em vez de aparecer de repente */
+.view-enter > :not(.nav) { animation: fadeup .22s ease-out both; }
+@keyframes fadeup { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.sheet.sheet-in { animation: sheetup .24s ease-out both; }
+@keyframes sheetup { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.toast { animation: toastin .2s ease-out both; }
+@keyframes toastin { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (prefers-reduced-motion: reduce) { .view-enter > :not(.nav), .sheet.sheet-in, .toast { animation: none; } html.is-loading::before { animation-duration: 3s; } }
