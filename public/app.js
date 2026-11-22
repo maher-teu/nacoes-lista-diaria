@@ -261,32 +261,98 @@
   }
 
   // ------------------------------------------------------------------ carregamento
+  const pubUrl = (path) => `${CFG.supabaseUrl}/storage/v1/object/public/catalogo/${path}`;
+
   async function loadCatalog() {
     if (DEMO) { S.catalog = []; return; }
     try {
-      const { data, error } = await sb.storage.from('catalogo').list('', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
-      if (error) throw error;
-      S.catalog = (data || []).filter((f) => f.name && !f.name.startsWith('.')).map((f) => ({
-        name: f.name,
-        url: sb.storage.from('catalogo').getPublicUrl(f.name).data.publicUrl,
-        type: (f.metadata && f.metadata.mimetype) || '',
+      const items = await rpc('catalog_list');
+      const { data } = await sb.storage.from('catalogo').list('', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+      const loose = (data || []).filter((f) => f.id && f.name && !f.name.startsWith('.')).map((f) => ({
+        name: f.name, url: pubUrl(f.name), type: (f.metadata && f.metadata.mimetype) || '', desc: '', loose: true,
       }));
+      S.catalog = (items || []).filter((i) => i.image_path).map((i) => ({
+        name: i.image_path, url: pubUrl(i.image_path), type: 'image/jpeg', desc: i.description || '', price: i.price, ref: i.ref,
+      })).concat(loose);
     } catch (e) { console.error(e); S.catalog = []; }
     if (S.view === 'hoje' || S.view === 'resultados') render();
   }
 
+  async function callIa(body) {
+    const { data } = await sb.auth.getSession();
+    const r = await fetch(`${CFG.supabaseUrl}/functions/v1/ia`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: CFG.supabaseKey, authorization: `Bearer ${data.session && data.session.access_token}` },
+      body: JSON.stringify(body),
+    });
+    return r.json();
+  }
+
+  function setUpload(msg) {
+    S.uploadMsg = msg;
+    const el = document.getElementById('upload-status');
+    if (el) el.textContent = msg; else render();
+  }
+
+  async function processCatalogPdf(file) {
+    const pdfjs = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+    const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+    const week = new Date().toISOString().slice(0, 10);
+    const items = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      setUpload(`Lendo página ${i} de ${pdf.numPages}...`);
+      const page = await pdf.getPage(i);
+      const text = (await page.getTextContent()).items.map((t) => t.str).join(' ');
+      const ref = (text.match(/REF[:.\s]*([0-9A-Za-z.\-]+)/i) || [])[1];
+      if (!ref) continue;
+      const priceTxt = (text.match(/R\$\s*([0-9.]+,[0-9]{2})/) || [])[1];
+      const vp = page.getViewport({ scale: 1.4 });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.82));
+      const path = `semana-${week}/${ref}.jpg`;
+      const { error } = await sb.storage.from('catalogo').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+      if (error) { console.error(error); continue; }
+      items.push({ ref, page: i, price: priceTxt ? Number(priceTxt.replace(/\./g, '').replace(',', '.')) : null, image_path: path });
+    }
+    setUpload(`Salvando ${items.length} peças...`);
+    const res = await rpc('catalog_replace', { p_week: week, p_items: items });
+    if (res && res.sem_descricao) {
+      setUpload(`A IA está olhando ${res.sem_descricao} fotos novas...`);
+      await callIa({ action: 'describe' });
+    }
+    setUpload('Escrevendo as mensagens com as peças da semana...');
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: TZ }));
+    const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    const tomorrow = new Date(d); tomorrow.setDate(d.getDate() + 1);
+    await callIa({ action: 'write', date: iso(d), force: true });
+    await callIa({ action: 'write', date: iso(tomorrow), force: true });
+    return items.length;
+  }
+
   async function uploadCatalog(files) {
     if (!files || !files.length || S.uploading) return;
-    S.uploading = true; render();
+    S.uploading = true; S.uploadMsg = 'Enviando...'; render();
+    const pdfs = files.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+    files = files.filter((f) => !pdfs.includes(f));
+    for (const pdf of pdfs) {
+      try {
+        const n = await processCatalogPdf(pdf);
+        toast(`Catálogo pronto: ${n} peças. As mensagens já usam as peças da semana.`);
+      } catch (e) { console.error(e); toast('Não consegui ler o PDF. Tente de novo.'); }
+    }
     let ok = 0;
     for (const f of files) {
       const clean = f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '-');
       const { error } = await sb.storage.from('catalogo').upload(`${Date.now()}-${clean}`, f, { upsert: false, contentType: f.type || undefined });
       if (error) console.error(error); else ok++;
     }
-    S.uploading = false;
+    S.uploading = false; S.uploadMsg = '';
     await loadCatalog();
-    toast(ok === files.length ? `${ok} arquivo(s) no catálogo.` : `Subiram ${ok} de ${files.length}. Tente os outros de novo.`);
+    await loadBoard(true); render();
+    if (files.length) toast(ok === files.length ? `${ok} arquivo(s) no catálogo.` : `Subiram ${ok} de ${files.length}. Tente os outros de novo.`);
   }
 
   async function removeCatalog(name) {
@@ -299,18 +365,12 @@
   async function openCatalog() {
     S.catalogOpen = true;
     renderSheet();
-    for (const f of S.catalog) {
-      if (S.catalogBlobs[f.name]) continue;
-      try {
-        const b = await (await fetch(f.url)).blob();
-        S.catalogBlobs[f.name] = new File([b], f.name.replace(/^\d+-/, ''), { type: b.type || f.type });
-      } catch (e) { /* abre pelo link */ }
-    }
+    S.catalog.slice(0, 40).forEach((f) => prefetchBlob(f.name, f.url));
   }
 
   function shareCatalog(name) {
     const file = S.catalogBlobs[name];
-    const item = S.catalog.find((x) => x.name === name);
+    const item = S.catalog.find((x) => x.name === name) || { url: pubUrl(name) };
     if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
       navigator.share({ files: [file] }).catch(() => {});
       return;
@@ -417,6 +477,27 @@
       </div>`;
   }
 
+  function itemBlock(c) {
+    const it = c.item;
+    if (!it || !it.image_path) return '';
+    const url = pubUrl(it.image_path);
+    prefetchBlob(it.image_path, url);
+    return `<div class="msg-box" style="flex-direction:row;align-items:center;gap:12px">
+      <img src="${esc(url)}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:8px;flex-shrink:0">
+      <div style="flex:1;min-width:0"><span class="msg-label">Peça sugerida</span><p class="small">${esc((it.description || '').toLowerCase())}</p></div>
+    </div>
+    <button class="btn" data-act="catalog-share" data-name="${esc(it.image_path)}">📸 Enviar foto da peça</button>`;
+  }
+
+  async function prefetchBlob(name, url) {
+    if (S.catalogBlobs[name] || S.catalogBlobs[`loading:${name}`]) return;
+    S.catalogBlobs[`loading:${name}`] = true;
+    try {
+      const b = await (await fetch(url)).blob();
+      S.catalogBlobs[name] = new File([b], name.split('/').pop(), { type: b.type || 'image/jpeg' });
+    } catch (e) { /* abre pelo link */ }
+  }
+
   function cardNovo(c) {
     const u = S.ui[c.id] || {};
     const cu = c.customer || {};
@@ -427,7 +508,7 @@
         <div class="pills">${SKIP.map((r) => `<button class="pill" data-act="skip-do" data-id="${c.id}" data-r="${r.k}">${esc(r.label)}</button>`).join('')}</div>
         <button class="link-btn" data-act="back" data-id="${c.id}" style="align-self:flex-start">Voltar</button></article>`;
     }
-    return `<article class="card">${head}${chipsHtml(c.reasons)}${lastBuy(cu)}
+    return `<article class="card">${head}${chipsHtml(c.reasons)}${lastBuy(cu)}${itemBlock(c)}
       ${msgBox(c, 'novo', 'Mensagem pronta')}${waButtons(c, 'novo')}
       <button class="link-btn" data-act="skip" data-id="${c.id}" style="align-self:flex-start">Pular esta</button></article>`;
   }
@@ -656,14 +737,16 @@
   function renderCatalogAdmin() {
     const items = S.catalog.map((f) => `<div class="row" style="min-height:56px">
         ${/^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name) ? `<img src="${esc(f.url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:8px">` : '<span class="rank">PDF</span>'}
-        <span class="grow small">${esc(f.name.replace(/^\d+-/, ''))}</span>
+        <span class="grow small">${esc(f.desc || f.name.replace(/^\d+-/, ''))}</span>
         <button class="link-btn danger" data-act="catalog-del" data-name="${esc(f.name)}">Apagar</button></div>`).join('');
     return `<section class="section"><h2 class="section-title">Catálogo da semana</h2>
       <div class="card">
-        <p class="small muted">Suba aqui as fotos, vídeos ou o PDF das novidades da semana. A loja vê tudo na tela de hoje e manda direto no WhatsApp para as clientes.</p>
+        <p class="small muted">Suba aqui o PDF do catálogo da semana (ou fotos). O app separa uma foto por peça, e as mensagens do dia passam a recomendar peças desse catálogo. A loja manda a foto da peça direto no WhatsApp.</p>
         <label class="btn primary" style="cursor:pointer">${S.uploading ? 'Enviando...' : '📸 Adicionar fotos ou PDF'}
           <input type="file" id="catalog-input" accept="image/*,application/pdf,video/mp4" multiple hidden ${S.uploading ? 'disabled' : ''}></label>
-        ${items ? `<div class="list">${items}</div>` : '<p class="small muted">Nenhum arquivo ainda.</p>'}
+        <p class="small strong" id="upload-status">${esc(S.uploading ? (S.uploadMsg || '') : '')}</p>
+        ${S.catalog.some((f) => f.ref) ? `<button class="btn" data-act="ia-rewrite">✨ Reescrever as mensagens de hoje com o catálogo</button>` : ''}
+        ${items ? `<div class="list" style="max-height:420px;overflow:auto">${items}</div>` : '<p class="small muted">Nenhum arquivo ainda.</p>'}
       </div></section>`;
   }
 
@@ -713,7 +796,8 @@
     const items = S.catalog.map((f) => {
       const isImg = /^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name);
       return `<div class="card" style="gap:10px">
-        ${isImg ? `<img src="${esc(f.url)}" alt="" style="width:100%;border-radius:10px">` : `<p class="strong">${esc(f.name.replace(/^\d+-/, ''))}</p>`}
+        ${isImg ? `<img src="${esc(f.url)}" alt="" loading="lazy" style="width:100%;border-radius:10px">` : ''}
+        ${f.desc ? `<p class="small">${esc(f.desc.toLowerCase())}</p>` : (isImg ? '' : `<p class="strong">${esc(f.name.replace(/^\d+-/, ''))}</p>`)}
         <button class="btn primary" data-act="catalog-share" data-name="${esc(f.name)}">${I.wa} Enviar no WhatsApp</button></div>`;
     }).join('');
     return `<div class="sheet-bg" data-act="sheet-close"><div class="sheet" data-stop role="dialog" aria-label="Catálogo da semana">
@@ -872,6 +956,20 @@
     catalog: () => openCatalog(),
     'catalog-share': (ds) => shareCatalog(ds.name),
     'catalog-del': (ds) => removeCatalog(ds.name),
+    'ia-rewrite': async () => {
+      if (S.uploading) return;
+      S.uploading = true; S.uploadMsg = 'Escrevendo as mensagens com as peças da semana...'; render();
+      try {
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: TZ }));
+        const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+        const t = new Date(d); t.setDate(d.getDate() + 1);
+        const a = await callIa({ action: 'write', date: iso(d), force: true });
+        const b = await callIa({ action: 'write', date: iso(t), force: true });
+        toast(`Pronto: ${(a.written || 0) + (b.written || 0)} mensagens reescritas.`);
+      } catch (e) { console.error(e); toast('Não deu certo. Tente de novo.'); }
+      S.uploading = false; S.uploadMsg = '';
+      await loadBoard(true); render();
+    },
     'login-role': (ds) => { S.login.role = ds.r; S.login.error = ''; render(); },
     logout: async () => {
       if (DEMO) { location.href = location.pathname; return; }
