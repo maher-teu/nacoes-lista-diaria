@@ -800,7 +800,7 @@
           ${items.length < n ? `<button class="btn kmore" data-act="funil-more" data-stage="${k}">Ver mais (${(n - items.length).toLocaleString('pt-BR')})</button>` : ''}</div>
       </section>`;
     }).join('');
-    return `<div class="kchips" role="tablist">${chips}</div><div class="kboard" id="kboard">${cols}</div>`;
+    return `<div class="kchips" role="tablist">${chips}</div><p class="small muted khint">Segure e arraste o card para mudar de etapa.</p><div class="kboard" id="kboard">${cols}</div>`;
   }
   function renderFunil() {
     const el = document.getElementById('funil-root');
@@ -812,6 +812,150 @@
     const nb = document.getElementById('kboard');
     if (nb) { nb.scrollLeft = keep; [...nb.querySelectorAll('.kbody')].forEach((x, i) => { x.scrollTop = keepCols[i] || 0; }); }
   }
+  // ---------- Arrastar cards entre etapas (mouse e dedo)
+  const STAGE_NAME = Object.fromEntries(STAGES.map(([k, t]) => [k, t]));
+  const DRAG = { el: null, ghost: null, code: null, from: null, over: null, x: 0, y: 0, dx: 0, dy: 0, raf: 0, timer: 0, start: null, active: false, pointerId: null, suppress: false, w: 0 };
+  function dragCancelPending() { clearTimeout(DRAG.timer); DRAG.timer = 0; DRAG.start = null; }
+  function dragBegin() {
+    const card = DRAG.el;
+    if (!card || !card.isConnected) return;
+    const r = card.getBoundingClientRect();
+    DRAG.dx = DRAG.x - r.left; DRAG.dy = DRAG.y - r.top; DRAG.w = r.width;
+    const g = card.cloneNode(true);
+    g.classList.add('kghost'); g.removeAttribute('data-act');
+    g.style.width = r.width + 'px'; g.style.left = '0px'; g.style.top = '0px';
+    document.body.appendChild(g);
+    DRAG.ghost = g; DRAG.active = true;
+    card.classList.add('kplace');
+    document.documentElement.classList.add('kdragging');
+    try { navigator.vibrate && navigator.vibrate(12); } catch (e) { /* ok */ }
+    dragFrame();
+  }
+  function dragFrame() {
+    if (!DRAG.active) return;
+    const g = DRAG.ghost;
+    g.style.transform = `translate3d(${DRAG.x - DRAG.dx}px, ${DRAG.y - DRAG.dy}px, 0) rotate(2.5deg) scale(1.04)`;
+    // coluna embaixo do dedo
+    g.style.visibility = 'hidden';
+    const under = document.elementFromPoint(DRAG.x, DRAG.y);
+    g.style.visibility = '';
+    const col = under && under.closest('.kcol');
+    const stage = col ? col.id.replace('col-', '') : null;
+    if (stage !== DRAG.over) {
+      document.querySelectorAll('.kcol.kover, .kcol.kno').forEach((c) => c.classList.remove('kover', 'kno'));
+      if (col && stage !== DRAG.from) col.classList.add(stage === 'nunca' ? 'kno' : 'kover');
+      DRAG.over = stage;
+    }
+    // rolagem automática perto das bordas
+    const board = document.getElementById('kboard');
+    if (board) {
+      const br = board.getBoundingClientRect(), edge = 60;
+      if (DRAG.x < br.left + edge) board.scrollLeft -= Math.min(12, Math.ceil((br.left + edge - DRAG.x) / 4));
+      else if (DRAG.x > br.right - edge) board.scrollLeft += Math.min(12, Math.ceil((DRAG.x - (br.right - edge)) / 4));
+    }
+    const body = col && col.querySelector('.kbody');
+    if (body) {
+      const r = body.getBoundingClientRect(), edge = 50;
+      if (DRAG.y < r.top + edge) body.scrollTop -= Math.min(12, Math.ceil((r.top + edge - DRAG.y) / 4));
+      else if (DRAG.y > r.bottom - edge) body.scrollTop += Math.min(12, Math.ceil((DRAG.y - (r.bottom - edge)) / 4));
+    }
+    DRAG.raf = requestAnimationFrame(dragFrame);
+  }
+  function dragEnd(drop) {
+    cancelAnimationFrame(DRAG.raf);
+    const { ghost, el: card, code, from, over } = DRAG;
+    document.querySelectorAll('.kcol.kover, .kcol.kno').forEach((c) => c.classList.remove('kover', 'kno'));
+    document.documentElement.classList.remove('kdragging');
+    DRAG.active = false; DRAG.el = null; DRAG.over = null;
+    if (!ghost) return;
+    DRAG.suppress = true; setTimeout(() => { DRAG.suppress = false; }, 350);
+    const target = drop && over && over !== from && over !== 'nunca' ? over : null;
+    const destCol = target && document.getElementById('col-' + target);
+    // o card voa até o lugar final (ou volta para onde estava)
+    let tx, ty;
+    if (destCol) { const r = destCol.querySelector('.kbody').getBoundingClientRect(); tx = r.left + 10; ty = r.top + 10; }
+    else { const r = card.getBoundingClientRect(); tx = r.left; ty = r.top; }
+    ghost.style.transition = 'transform .22s cubic-bezier(.2,.8,.2,1), opacity .22s';
+    ghost.style.transform = `translate3d(${tx}px, ${ty}px, 0) rotate(0) scale(1)`;
+    setTimeout(() => { ghost.remove(); if (card) card.classList.remove('kplace'); if (target) moveCard(code, from, target); }, 220);
+    if (drop && over === 'nunca' && from !== 'nunca') toast('Não dá para voltar para “Ainda não chamadas”.');
+  }
+  async function moveCard(code, from, to) {
+    const F = S.funil;
+    const list = F.items[from] || [];
+    const i = list.findIndex((c) => c.code === code);
+    if (i < 0) return;
+    const card = Object.assign({}, list[i], { updated_at: new Date().toISOString() });
+    list.splice(i, 1);
+    F.items[to] = [card].concat(F.items[to] || []);
+    F.counts[from] = Math.max(0, Number(F.counts[from] || 0) - 1);
+    F.counts[to] = Number(F.counts[to] || 0) + 1;
+    renderFunil();
+    const col = document.getElementById('col-' + to);
+    const first = col && col.querySelector('.kcard');
+    if (first) first.classList.add('kdropped');
+    try {
+      const r = await rpc('mover_etapa', { p_code: code, p_stage: to });
+      F.lastMove = { cycleId: r.cycle_id, created: r.created };
+      const root = document.getElementById('toast-root');
+      if (root) {
+        root.innerHTML = `<div class="toast" role="status"><span>${esc(card.name.split(' ')[0])} foi para “${esc(STAGE_NAME[to])}”.</span><button data-act="funil-undo">Desfazer</button></div>`;
+        clearTimeout(toastTimer); toastTimer = setTimeout(() => { root.innerHTML = ''; }, 7000);
+      }
+      if (S.board) loadBoard(true);
+    } catch (e) {
+      console.error(e);
+      toast(errorText(e));
+      loadFunil();
+    }
+  }
+  async function undoMove() {
+    const m = S.funil.lastMove;
+    document.getElementById('toast-root').innerHTML = '';
+    if (!m || !m.cycleId) return;
+    try {
+      await rpc('undo_last', { p_id: m.cycleId });
+      if (m.created) await rpc('undo_last', { p_id: m.cycleId });
+      S.funil.lastMove = null;
+      await loadFunil();
+      if (S.board) loadBoard(true);
+      toast('Desfeito.');
+    } catch (e) { console.error(e); toast(errorText(e)); }
+  }
+  document.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('.kcard');
+    if (!card || e.button > 0) return;
+    const col = card.closest('.kcol');
+    DRAG.el = card; DRAG.code = card.dataset.code; DRAG.from = col ? col.id.replace('col-', '') : null;
+    DRAG.x = e.clientX; DRAG.y = e.clientY; DRAG.start = { x: e.clientX, y: e.clientY, type: e.pointerType };
+    DRAG.pointerId = e.pointerId;
+    if (e.pointerType !== 'mouse') {
+      // no dedo: segurar um instante para arrastar (assim o deslizar continua rolando a tela)
+      DRAG.timer = setTimeout(() => { DRAG.timer = 0; if (DRAG.start) dragBegin(); }, 280);
+      card.classList.add('kpress');
+    }
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!DRAG.el || e.pointerId !== DRAG.pointerId) return;
+    DRAG.x = e.clientX; DRAG.y = e.clientY;
+    if (DRAG.active) return;
+    if (!DRAG.start) return;
+    const moved = Math.hypot(e.clientX - DRAG.start.x, e.clientY - DRAG.start.y);
+    if (DRAG.start.type === 'mouse') { if (moved > 6) { DRAG.start = null; dragBegin(); } }
+    else if (moved > 10) { dragCancelPending(); DRAG.el.classList.remove('kpress'); DRAG.el = null; }
+  });
+  const up = (drop) => (e) => {
+    if (!DRAG.el || (e.pointerId != null && e.pointerId !== DRAG.pointerId)) return;
+    DRAG.el.classList.remove('kpress');
+    dragCancelPending();
+    if (DRAG.active) dragEnd(drop); else DRAG.el = null;
+  };
+  document.addEventListener('pointerup', up(true));
+  document.addEventListener('pointercancel', up(false));
+  // enquanto arrasta no celular, a tela não rola
+  document.addEventListener('touchmove', (e) => { if (DRAG.active || DRAG.timer) { if (DRAG.active) e.preventDefault(); } }, { passive: false });
+  document.addEventListener('contextmenu', (e) => { if (e.target.closest('.kcard')) e.preventDefault(); });
+
   function renderClientes() {
     if (!S.funil.counts && !S.funil.loading) setTimeout(() => loadFunil(), 0);
     const searching = (S.search.q || '').trim().length >= 2;
@@ -1126,6 +1270,7 @@
     catalog: () => openCatalog(),
     'funil-go': (ds) => { const c = document.getElementById('col-' + ds.stage); const b = document.getElementById('kboard'); if (c && b) b.scrollTo({ left: c.offsetLeft - 16, behavior: 'smooth' }); },
     'funil-more': (ds) => loadMoreStage(ds.stage),
+    'funil-undo': () => undoMove(),
     'catalog-toggle': () => { S.catalogListOpen = !S.catalogListOpen; render(); },
     'catalog-share': (ds) => shareCatalog(ds.name),
     'catalog-del': (ds) => removeCatalog(ds.name),
@@ -1153,7 +1298,7 @@
     },
   };
 
-  const NO_SPIN = new Set(['nav', 'sheet-close', 'login-role', 'catalog-toggle', 'funil-go']);
+  const NO_SPIN = new Set(['nav', 'sheet-close', 'login-role', 'catalog-toggle', 'funil-go', 'customer']);
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
     if (!el) return;
@@ -1161,6 +1306,7 @@
     if (act === 'sheet-close' && el.classList.contains('sheet-bg') && e.target !== el) return;
     if (handlers[act]) {
       e.preventDefault();
+      if (DRAG.suppress && el.classList.contains('kcard')) return;
       const r = handlers[act](el.dataset, el, e);
       if (r && typeof r.then === 'function' && el.isConnected && !NO_SPIN.has(act)) {
         el.classList.add('btn-busy'); el.setAttribute('aria-busy', 'true');
@@ -1367,6 +1513,16 @@
           if (!p_stage || p_stage === k) out[k] = list.slice(p_offset, p_offset + p_limit);
         });
         return { counts, values, items: out };
+      },
+      mover_etapa({ p_code, p_stage }) {
+        const c = cu(p_code);
+        if (c) {
+          const last = cycles.filter((y) => y.customer_code === p_code).pop();
+          if (p_stage === 'nao_quer') c.do_not_contact = true;
+          else { c.do_not_contact = false; if (last) last.status = { hoje: 'pendente', aguardando: 'enviada', conversa: 'respondeu', vendeu: 'vendeu', encerrada: 'encerrada' }[p_stage]; }
+          return { ok: true, stage: p_stage, cycle_id: last ? last.id : null, created: false };
+        }
+        return { ok: true, stage: p_stage, cycle_id: null, created: false };
       },
       start_manual() { throw new Error('No modo demonstração não dá para adicionar clientes.'); },
       generate_daily_list() { return 0; },
