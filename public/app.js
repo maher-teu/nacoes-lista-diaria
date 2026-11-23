@@ -184,11 +184,27 @@
     return t.split(/\n+/).map((x) => x.trim()).filter(Boolean).join('\n\n');
   }
   const msgRows = (t) => Math.min(20, Math.max(4, String(t || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 32)), 0) + 1));
+  // Presente de aniversário: entra só na primeira mensagem de quem faz aniversário nesta semana.
+  const BIRTHDAY_DEFAULT = 'De presente de aniversário, você ganha 15% de desconto em compras acima de R$ 89,90 🎁';
+  function birthdayLine() {
+    const st = (S.board && S.board.settings) || {};
+    return 'birthday_line' in st ? (st.birthday_line || '') : BIRTHDAY_DEFAULT;
+  }
+  function withBirthday(text, c) {
+    const line = birthdayLine().trim();
+    if (!line || !(c.reasons || []).some((r) => String(r).startsWith('aniversario'))) return text;
+    if (text.includes(line) || /\d+\s*%/.test(text)) return text;
+    const parts = text.split('\n\n');
+    const last = parts[parts.length - 1] || '';
+    if (parts.length > 1 && /\?\s*\S*\s*$/.test(last) && last.includes('?')) parts.splice(parts.length - 1, 0, line);
+    else parts.push(line);
+    return parts.join('\n\n');
+  }
   function defaultMsg(c, kind) {
     if (!c) return '';
     if (kind === 'lembrete') return spaced(c.bump_message);
     if (kind === 'follow') return spaced(followMsg(c));
-    return spaced(c.message);
+    return withBirthday(spaced(c.message), c);
   }
   const getMsg = (id, kind) => S.edits[`${id}:${kind}`] ?? defaultMsg(cycleById(id), kind);
 
@@ -222,7 +238,8 @@
     copyText(text, true);
     if (DEMO) { toast('Modo demonstração: aqui o WhatsApp abriria com a mensagem pronta.'); return; }
     const a = document.createElement('a');
-    a.href = `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+    // api.whatsapp.com e não wa.me: o redirecionamento do wa.me estraga os emojis (viram "�")
+    a.href = `https://api.whatsapp.com/send?phone=${digits}&text=${encodeURIComponent(text)}`;
     a.target = '_blank';
     a.rel = 'noopener';
     document.body.appendChild(a);
@@ -1045,6 +1062,10 @@
           <textarea class="input" name="campaign_line" placeholder="Ex.: Até o dia 24 a embalagem de presente é por nossa conta.">${esc(s.campaign_line || '')}</textarea>
         </label>
         <p class="small muted">Deixe em branco quando não houver campanha. Vale a partir da próxima lista.</p>
+        <label class="field">Presente de aniversário (entra na mensagem de quem faz aniversário)
+          <textarea class="input" name="birthday_line" placeholder="Ex.: De presente, 15% de desconto em compras acima de R$ 89,90 🎁">${esc(birthdayLine())}</textarea>
+        </label>
+        <p class="small muted">Deixe em branco para não oferecer presente de aniversário.</p>
         <div class="grid2">
           ${num('daily_new', 'Novos por dia', 0, 300)}
           ${num('bump_hours', 'Lembrete depois de (horas)', 0, 12, 0.5)}
@@ -1356,6 +1377,7 @@
         if (v !== '') p[k] = Number(v);
       });
       p.campaign_line = String(f.get('campaign_line') || '');
+      p.birthday_line = String(f.get('birthday_line') || '');
       act(() => rpc('update_settings', { p }), 'Ajustes salvos.');
     }
   });
@@ -1392,7 +1414,7 @@
       ['Juliana Pereira', 'Juliana', ['sumida'], 'Oi Juliana, tudo bem? Aqui é da Baummer Nações. Faz um tempinho que você não passa aqui, e chegaram anéis novos folheados a ouro que são a sua cara. Quer ver algumas fotos?'],
     ];
     let seq = 1;
-    const settings = { id: 1, daily_new: 50, bump_hours: 4, followup_every_days: 2, followup_max: 12, rest_days: 60, store_name: 'Baummer Nações', campaign_line: null };
+    const settings = { id: 1, daily_new: 50, bump_hours: 4, followup_every_days: 2, followup_max: 12, rest_days: 60, store_name: 'Baummer Nações', campaign_line: null, birthday_line: 'De presente de aniversário, você ganha 15% de desconto em compras acima de R$ 89,90 🎁' };
     const customers = people.map((p, i) => ({
       code: `D${i + 1}`, name: p[0], first_name: p[1], phone: `5548${String(991000000 + i * 1371)}`, cidade: 'Criciúma', bairro: 'Centro',
       total_spent: 820 - i * 61, last_period: i % 2 ? '2025-12' : '2026-04', n_periods: 3 + (i % 5),
@@ -1526,7 +1548,7 @@
       },
       start_manual() { throw new Error('No modo demonstração não dá para adicionar clientes.'); },
       generate_daily_list() { return 0; },
-      update_settings({ p }) { Object.assign(settings, p, { campaign_line: p.campaign_line ? p.campaign_line : null }); return settings; },
+      update_settings({ p }) { Object.assign(settings, p, { campaign_line: p.campaign_line ? p.campaign_line : null, birthday_line: p.birthday_line ? p.birthday_line : null }); return settings; },
       results_summary() {
         const cnt = (k) => events.filter((e) => e.kind === k).length;
         const dias = [];

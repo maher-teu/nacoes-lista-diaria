@@ -10,7 +10,7 @@ SCENES = [
     ('G', 2, 'Quatro horas depois, ela aparece em Lembretes. Não respondeu? Mande o lembrete. Respondeu? Marque o que ela disse e envie a foto da peça.', 10.0),
     ('H', 2, 'Quem responde vai para Follow-ups e recebe uma mensagem nova a cada dois dias, até comprar. Comprou? Toque em Comprou.', 8.5),
     ('I', 2, 'Número errado? Toque em Pular. Tocou errado? Desfazer.', 4.5),
-    ('J', 3, 'Na aba Clientes fica o funil: todas as clientes, separadas por etapa. Toque numa etapa para ver quem está nela.', 8.0),
+    ('J', 3, 'Na aba Clientes fica o funil: cada coluna é uma etapa e cada card é uma cliente. Segure e arraste o card para mudar a cliente de etapa.', 8.5),
     ('K', 3, 'Ou busque pelo nome e abra a ficha: o que ela comprou, o aniversário e cada mensagem enviada.', 7.0),
     ('L', 4, 'Toda semana, a dona sobe o PDF do catálogo. O novo substitui o antigo, e as mensagens só sugerem o que tem na loja.', 8.5),
     ('M', 4, 'Tem promoção? Ela escreve a frase da campanha, e a inteligência artificial coloca essa ideia nas mensagens novas. Acabou? É só apagar.', 9.5),
